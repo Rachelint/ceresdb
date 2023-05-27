@@ -23,7 +23,10 @@ use crate::{
     engine,
     instance::{
         self,
-        engine::{ApplyMemTable, FlushTable, OpenManifest, ReadMetaUpdate, ReadWal, Result, RecoverManifest},
+        engine::{
+            ApplyMemTable, FlushTable, OpenManifest, ReadMetaUpdate, ReadWal, RecoverManifest,
+            Result,
+        },
         flush_compaction::TableFlushOptions,
         mem_collector::MemUsageCollector,
         serial_executor::TableOpSerialExecutor,
@@ -184,16 +187,21 @@ impl Instance {
             shard_id: request.shard_id,
             tables: vec![TableInSpace { table_id, space_id }],
         };
-        
+
         // TODO: still recover single table now.
-        let mut table_results = self.space_store
+        let mut table_results = self
+            .space_store
             .manifest
             .recover(&recover_req)
             .await
             .context(ReadMetaUpdate {
                 table_id: request.table_id,
             })?;
-        table_results.pop().unwrap().result.context(RecoverManifest)?;
+        table_results
+            .pop()
+            .unwrap()
+            .result
+            .context(RecoverManifest)?;
         info!("Instance recover table:{} meta end", request.table_id);
 
         Ok(())

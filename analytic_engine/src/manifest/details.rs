@@ -4,7 +4,7 @@
 
 use std::{
     collections::HashMap,
-    fmt::{self, format},
+    fmt,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -20,6 +20,7 @@ use common_util::{
 use log::{debug, info, warn};
 use object_store::ObjectStoreRef;
 use serde::{Deserialize, Serialize};
+use snafu::OptionExt;
 use table_engine::table::TableId;
 use tokio::sync::Mutex;
 use wal::manager::{ReadBoundary, RegionId, SequenceNumber, WalLocation, WalManagerRef};
@@ -61,6 +62,14 @@ struct SnapshotRecoverer<LogStore, SnapshotStore> {
     snapshot_store: SnapshotStore,
     request: RecoverRequest,
     states: HashMap<TableId, RecoverState>,
+    mode: RecoverMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum RecoverMode {
+    #[allow(dead_code)]
+    RegionBased,
+    TableBased,
 }
 
 #[derive(Debug)]
@@ -108,8 +117,12 @@ where
 
         // Update state according to the pull results.
         for (table_id, result) in results {
-            let state = self.states.get_mut(&table_id).expect("table id must exist");
-            assert!(matches!(state, RecoverState::FromSnapshotStore));
+            let state =
+                self.states
+                    .get_mut(&table_id)
+                    .with_context(|| RecoverFromStorageNoCause {
+                        msg: format!("table not exist, table_id:{table_id}"),
+                    })?;
 
             match result {
                 Ok(snapshot_opt) => {
@@ -125,6 +138,8 @@ where
                                         data.version_meta,
                                     ),
                                 ),
+                                // Has snapshot but not actual data in it, maybe this table has been
+                                // dropped.
                                 None => (snapshot.end_seq, MetaSnapshotBuilder::default()),
                             }
                         }
@@ -146,7 +161,10 @@ where
     }
 
     async fn recover_from_log(&mut self) -> Result<()> {
-        self.recover_from_log_on_table_mode().await
+        match self.mode {
+            RecoverMode::RegionBased => self.recover_from_log_on_region_mode().await,
+            RecoverMode::TableBased => self.recover_from_log_on_table_mode().await,
+        }
     }
 
     // TODO: now we just recover table by table as origin.
@@ -226,6 +244,8 @@ where
         }
 
         let snapshot = if *is_empty {
+            // No snapshot and no logs of this table, some errors may have happened.
+            warn!("Manifest recover nothing for table, table_id:{table_id}, shard_id:{shard_id}");
             None
         } else {
             let meta_snapshot_builder = std::mem::take(meta_snapshot_builder);
@@ -239,8 +259,7 @@ where
         Ok(snapshot)
     }
 
-    #[allow(dead_code)]
-    async fn region_based_recover_from_log(&mut self) -> Result<()> {
+    async fn recover_from_log_on_region_mode(&mut self) -> Result<()> {
         todo!()
     }
 
@@ -252,7 +271,7 @@ where
 
         self.recover_from_snapshot().await?;
         self.recover_from_log().await?;
-        
+
         let states = std::mem::take(&mut self.states);
         let table_results = states
             .into_iter()
@@ -382,6 +401,9 @@ pub struct ManifestImpl {
     snapshot_write_guard: Arc<Mutex<()>>,
 
     table_meta_set: Arc<dyn TableMetaSet>,
+
+    /// Recover mode, determine the recover strategy
+    recover_mode: RecoverMode,
 }
 
 impl ManifestImpl {
@@ -398,6 +420,8 @@ impl ManifestImpl {
             num_updates_since_snapshot: Arc::new(AtomicUsize::new(0)),
             snapshot_write_guard: Arc::new(Mutex::new(())),
             table_meta_set,
+            // TODO: support `RegionBased` recovery.
+            recover_mode: RecoverMode::TableBased,
         };
 
         Ok(manifest)
@@ -534,6 +558,7 @@ impl Manifest for ManifestImpl {
             snapshot_store,
             request: recover_req.clone(),
             states,
+            mode: self.recover_mode,
         };
         let recover_results = recoverer.recover().await.box_err()?;
 
@@ -1415,8 +1440,7 @@ mod tests {
             snapshot_store: snapshot_store.clone(),
             request,
             states,
-            // log_store: log_store.clone(),
-            // snapshot_store: snapshot_store.clone(),
+            mode: RecoverMode::TableBased,
         };
         recoverer
             .recover()

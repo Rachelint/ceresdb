@@ -215,10 +215,7 @@ pub enum Error {
     TableNotExist { msg: String, backtrace: Backtrace },
 
     #[snafu(display("Failed to recover manifest, err:{}", source))]
-    RecoverManifest {
-        source: GenericError,
-    },
-
+    RecoverManifest { source: GenericError },
 }
 
 define_result!(Error);

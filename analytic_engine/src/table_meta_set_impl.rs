@@ -20,7 +20,7 @@ use crate::{
         meta_snapshot::MetaSnapshot,
     },
     space::{Space, SpaceId, SpacesRef},
-    sst::file::{FilePurgerRef},
+    sst::file::FilePurgerRef,
     table::{
         data::{TableData, TableShardInfo},
         version::{TableVersionMeta, TableVersionSnapshot},
