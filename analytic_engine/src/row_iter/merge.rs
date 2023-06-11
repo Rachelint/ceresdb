@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 use std::{
     cmp,
@@ -20,7 +20,7 @@ use common_types::{
 };
 use common_util::{define_result, error::GenericError};
 use futures::{stream::FuturesUnordered, StreamExt};
-use log::{debug, trace};
+use log::{debug, trace, info};
 use snafu::{ensure, Backtrace, ResultExt, Snafu};
 use table_engine::{predicate::PredicateRef, table::TableId};
 use trace_metric::{MetricsCollector, TraceMetricWhenDrop};
@@ -748,8 +748,10 @@ impl MergeIterator {
             };
 
             if cold_new_batch {
+                info!("cold record batch");
                 self.cold.push(buffered_stream);
             } else {
+                info!("hot record batch");
                 self.hot.push(buffered_stream);
             }
             self.refill_hot();
@@ -823,6 +825,8 @@ impl MergeIterator {
         {
             // no need to do merge sort if only one batch in the hot heap.
             if self.hot.len() == 1 {
+                info!("Merge iterator fetch rows from one batch");
+
                 let fetch_row_num = self.iter_options.batch_size - self.record_batch_builder.len();
 
                 if let Some(record_batch) = self.fetch_rows_from_one_stream(fetch_row_num).await? {
@@ -832,6 +836,8 @@ impl MergeIterator {
                 }
                 // Else, some rows may have been pushed into the builder.
             } else {
+                info!("Merge iterator fetch one row from batches");
+
                 self.fetch_one_row_from_multiple_streams().await?;
             }
         }
