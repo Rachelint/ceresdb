@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 //! Merge memtable bench.
 
@@ -168,7 +168,7 @@ impl MergeMemTableBench {
             let mut batch_num = 0;
 
             if self.dedup {
-                let mut dedup_iter = DedupIterator::new(request_id, merge_iter, iter_options);
+                let mut dedup_iter = DedupIterator::new(request_id, merge_iter, iter_options, None);
                 while let Some(batch) = dedup_iter.next_batch().await.unwrap() {
                     let num_rows = batch.num_rows();
                     total_rows += num_rows;

@@ -183,7 +183,7 @@ impl Instance {
                 .span(format!("{MERGE_ITER_METRICS_COLLECTOR_NAME_PREFIX}_{idx}"));
             let merge_config = MergeConfig {
                 request_id: request.request_id,
-                metrics_collector: Some(metrics_collector),
+                metrics_collector: Some(metrics_collector.clone()),
                 deadline: request.opts.deadline,
                 space_id: table_data.space_id,
                 table_id: table_data.id,
@@ -207,8 +207,10 @@ impl Instance {
                 .context(BuildMergeIterator {
                     table: &table_data.name,
                 })?;
+
+            let metrics_collector = metrics_collector.span(format!("Dedup iterator_{idx}"));
             let dedup_iter =
-                DedupIterator::new(request.request_id, merge_iter, iter_options.clone());
+                DedupIterator::new(request.request_id, merge_iter, iter_options.clone(), Some(metrics_collector));
 
             iters.push(dedup_iter);
         }

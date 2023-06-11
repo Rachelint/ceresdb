@@ -798,6 +798,7 @@ impl SpaceStore {
                 request_id,
                 merge_iter,
                 iter_options,
+                None,
             ))
         } else {
             row_iter::record_batch_with_key_iter_to_stream(merge_iter)

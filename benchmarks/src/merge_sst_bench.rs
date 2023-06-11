@@ -154,7 +154,7 @@ impl MergeSstBench {
             let begin_instant = Instant::now();
 
             let merge_iter = builder.build().await.unwrap();
-            let mut dedup_iter = DedupIterator::new(request_id, merge_iter, iter_options);
+            let mut dedup_iter = DedupIterator::new(request_id, merge_iter, iter_options, None);
             let mut total_rows = 0;
             let mut batch_num = 0;
 

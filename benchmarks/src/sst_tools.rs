@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 //! Tools to generate SST.
 
@@ -252,7 +252,7 @@ pub async fn merge_sst(config: MergeSstConfig, runtime: Arc<Runtime>) {
     };
 
     let record_batch_stream = if config.dedup {
-        let iter = DedupIterator::new(request_id, iter, iter_options);
+        let iter = DedupIterator::new(request_id, iter, iter_options, None);
         row_iter::record_batch_with_key_iter_to_stream(iter)
     } else {
         row_iter::record_batch_with_key_iter_to_stream(iter)

@@ -1,6 +1,6 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, time::Instant};
 
 use async_trait::async_trait;
 use common_types::{
@@ -15,6 +15,7 @@ use common_util::{
 };
 use log::{info, trace};
 use snafu::{ResultExt, Snafu};
+use trace_metric::{MetricsCollector, Metric};
 
 use crate::row_iter::{IterOptions, RecordBatchWithKeyIterator};
 
@@ -55,10 +56,12 @@ pub struct DedupIterator<I> {
     // Metrics:
     total_duplications: usize,
     total_selected_rows: usize,
+
+    metrics_collector:  Option<MetricsCollector>,
 }
 
 impl<I: RecordBatchWithKeyIterator> DedupIterator<I> {
-    pub fn new(request_id: RequestId, iter: I, iter_options: IterOptions) -> Self {
+    pub fn new(request_id: RequestId, iter: I, iter_options: IterOptions,  metrics_collector: Option<MetricsCollector>) -> Self {
         let schema = iter.schema();
 
         let record_batch_builder =
@@ -72,10 +75,13 @@ impl<I: RecordBatchWithKeyIterator> DedupIterator<I> {
             selected_rows: Vec::new(),
             total_duplications: 0,
             total_selected_rows: 0,
+            metrics_collector,
         }
     }
 
     fn dedup_batch(&mut self, record_batch: RecordBatchWithKey) -> Result<RecordBatchWithKey> {
+        let timer = Instant::now();
+
         self.selected_rows.clear();
         // Ignore all rows by default.
         self.selected_rows.resize(record_batch.num_rows(), false);
@@ -125,7 +131,14 @@ impl<I: RecordBatchWithKeyIterator> DedupIterator<I> {
         // prev_row_idx because they have same row key.
         self.prev_row = Some(record_batch.clone_row_at(record_batch.num_rows() - 1));
 
-        self.filter_batch(record_batch, selected_num)
+        let res = self.filter_batch(record_batch, selected_num);
+
+        let cost = timer.elapsed();
+        if let Some(collector) = &self.metrics_collector {
+            collector.collect(Metric::duration("dedup cost".to_string(), cost));
+        }
+
+        res
     }
 
     /// Filter batch by `selected_rows`.
@@ -230,7 +243,7 @@ mod tests {
         );
 
         let mut iter =
-            DedupIterator::new(RequestId::next_id(), iter, IterOptions { batch_size: 500 });
+            DedupIterator::new(RequestId::next_id(), iter, IterOptions { batch_size: 500 }, None);
         check_iterator(
             &mut iter,
             vec![
