@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use common_types::schema::Version;
 use common_util::{define_result, error::GenericError};
+use log::info;
 use snafu::{Backtrace, OptionExt, Snafu};
 use table_engine::{
     engine::{CloseTableRequest, CreateTableRequest, DropTableRequest, OpenShardRequest},
@@ -391,6 +392,9 @@ impl Instance {
         self: &Arc<Self>,
         request: OpenShardRequest,
     ) -> Result<OpenTablesOfShardResult> {
+        let info_req = request.clone();
+        info!("Instance open_tables_of_shard begin, request:{:?}", info_req);
+
         let shard_id = request.shard_id;
         let mut table_ctxs = Vec::with_capacity(request.table_defs.len());
 
@@ -436,6 +440,7 @@ impl Instance {
             }
         }
 
+        info!("Instance open_tables_of_shard finish, request:{:?}", info_req);
         Ok(shard_result)
     }
 }

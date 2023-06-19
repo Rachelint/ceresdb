@@ -8,7 +8,7 @@ use std::{
 };
 
 use common_types::table::ShardId;
-use log::info;
+use log::{info, error};
 use object_store::ObjectStoreRef;
 use snafu::ResultExt;
 use table_engine::{engine::TableDef, table::TableId};
@@ -241,10 +241,20 @@ impl ShardOpener {
 
     async fn open(&mut self) -> Result<OpenTablesOfShardResult> {
         // Recover tables' metadata.
-        self.recover_table_metas().await?;
+        self.recover_table_metas().await.map_err(|e| {
+            error!("ShardOpener failed to recover table_metas, err:{}", e);
+            e
+        })?;
+
+        info!("ShardOpener states after meta recover:{:?}", self.stages);
 
         // Recover table' data.
-        self.recover_table_datas().await?;
+        self.recover_table_datas().await.map_err(|e| {
+            error!("ShardOpener failed to recover table_datas, err:{}", e);
+            e
+        })?;
+
+        info!("ShardOpener states after data recover:{:?}", self.stages);
 
         // Retrieve the table results and return.
         let stages = std::mem::take(&mut self.stages);
@@ -273,6 +283,8 @@ impl ShardOpener {
 
     /// Recover table meta data from manifest based on shard.
     async fn recover_table_metas(&mut self) -> Result<()> {
+        info!("ShardOpener recover_table_metas begin, shard_id:{}", self.shard_id);
+
         for (table_id, state) in self.stages.iter_mut() {
             match state {
                 // Only do the meta recovery work in `RecoverTableMeta` state.
@@ -313,11 +325,14 @@ impl ShardOpener {
             }
         }
 
+        info!("ShardOpener recover_table_metas finish, shard_id:{}", self.shard_id);
         Ok(())
     }
 
     /// Recover table data based on shard.
     async fn recover_table_datas(&mut self) -> Result<()> {
+        info!("ShardOpener recover_table_data begin, shard_id:{}", self.shard_id);
+
         // Replay wal logs of tables.
         let mut replay_table_datas = Vec::with_capacity(self.stages.len());
         for (table_id, stage) in self.stages.iter_mut() {
@@ -380,6 +395,8 @@ impl ShardOpener {
                 }
             }
         }
+
+        info!("ShardOpener recover_table_data finish, shard_id:{}", self.shard_id);
 
         Ok(())
     }

@@ -168,6 +168,9 @@ impl TableEngine for TableEngineImpl {
     }
 
     async fn open_shard(&self, request: OpenShardRequest) -> Result<OpenShardResult> {
+        let info_request = request.clone();
+        info!("TableEngine open shard begin, request:{:?}", info_request);
+
         let shard_result = self
             .instance
             .open_tables_of_shard(request)
@@ -190,6 +193,8 @@ impl TableEngine for TableEngineImpl {
                 }
             }
         }
+
+        info!("TableEngine open shard finish, request:{:?}", info_request);
 
         Ok(engine_shard_result)
     }
