@@ -658,14 +658,14 @@ impl StreamStatistic {
                 } else {
                     let prev_count = self.row_count;
                     self.stream_id = Some(stream_id);
-                    self.row_count = 1;
+                    self.row_count = row_count;
                     Some(prev_count)
                 }
             }
 
             None => {
                 self.stream_id = Some(stream_id);
-                self.row_count = 1;
+                self.row_count = row_count;
                 None
             }
         }
