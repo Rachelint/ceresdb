@@ -618,7 +618,7 @@ lazy_static! {
     static ref ROW_PICKED_IN_SINGLE_STREAM_HISTOGRAM: Histogram = register_histogram!(
         "row_picked_in_single_stream",
         "Histogram of row picked in single stream among merge iterator",
-        vec![10.0, 50.0, 100.0, 500.0, 1000.0, 2000.0, 5000.0, 8192.0]
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 50.0, 100.0]
     )
     .unwrap();
 }
