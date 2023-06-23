@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 use std::{
     cmp,
@@ -20,7 +20,9 @@ use common_types::{
 };
 use common_util::{define_result, error::GenericError};
 use futures::{stream::FuturesUnordered, StreamExt};
+use lazy_static::lazy_static;
 use log::{debug, trace};
+use prometheus::{register_histogram, Histogram};
 use snafu::{ensure, Backtrace, ResultExt, Snafu};
 use table_engine::{predicate::PredicateRef, table::TableId};
 use trace_metric::{MetricsCollector, TraceMetricWhenDrop};
@@ -346,12 +348,14 @@ struct BufferedStream {
     stream: SequencedRecordBatchStream,
     /// `None` state means the stream is exhausted.
     state: Option<BufferedStreamState>,
+    stream_id: usize,
 }
 
 impl BufferedStream {
     async fn build(
         schema: RecordSchemaWithKey,
         mut stream: SequencedRecordBatchStream,
+        stream_id: usize,
     ) -> Result<Self> {
         let buffered_record_batch = Self::pull_next_non_empty_batch(&mut stream).await?;
         let state = buffered_record_batch.map(|v| BufferedStreamState {
@@ -363,6 +367,7 @@ impl BufferedStream {
             schema,
             stream,
             state,
+            stream_id,
         })
     }
 
@@ -609,6 +614,14 @@ impl Metrics {
     }
 }
 
+lazy_static! {
+    static ref ROW_PICKED_IN_SINGLE_STREAM_HISTOGRAM: Histogram = register_histogram!(
+        "row_picked_in_single_stream",
+        "Histogram of row picked in single stream among merge iterator",
+        vec![10.0, 50.0, 100.0, 500.0, 1000.0, 2000.0, 5000.0, 8192.0]
+    )
+    .unwrap();
+}
 pub struct MergeIterator {
     table_id: TableId,
     request_id: RequestId,
@@ -626,6 +639,37 @@ pub struct MergeIterator {
     iter_options: IterOptions,
     reverse: bool,
     metrics: Metrics,
+    stream_stat: StreamStatistic,
+}
+
+#[derive(Debug, Default)]
+pub struct StreamStatistic {
+    stream_id: Option<usize>,
+    row_count: usize,
+}
+
+impl StreamStatistic {
+    fn count_stream_row(&mut self, stream_id: usize, row_count: usize) -> Option<usize> {
+        match &self.stream_id {
+            Some(current_id) => {
+                if *current_id == stream_id {
+                    self.row_count += row_count;
+                    None
+                } else {
+                    let prev_count = self.row_count;
+                    self.stream_id = Some(stream_id);
+                    self.row_count = 1;
+                    Some(prev_count)
+                }
+            }
+
+            None => {
+                self.stream_id = Some(stream_id);
+                self.row_count = 1;
+                None
+            }
+        }
+    }
 }
 
 impl MergeIterator {
@@ -656,6 +700,7 @@ impl MergeIterator {
             iter_options,
             reverse,
             metrics,
+            stream_stat: StreamStatistic::default(),
         }
     }
 
@@ -676,9 +721,10 @@ impl MergeIterator {
 
         // Initialize buffered streams concurrently.
         let mut init_buffered_streams = FuturesUnordered::new();
-        for origin_stream in mem::take(&mut self.origin_streams) {
+        let origin_streams = mem::take(&mut self.origin_streams);
+        for (stream_id, origin_stream) in origin_streams.into_iter().enumerate() {
             let schema = self.schema.clone();
-            init_buffered_streams.push(BufferedStream::build(schema, origin_stream));
+            init_buffered_streams.push(BufferedStream::build(schema, origin_stream, stream_id));
         }
 
         let pull_start = Instant::now();
@@ -775,6 +821,12 @@ impl MergeIterator {
         self.metrics.times_fetch_rows_from_one += 1;
 
         let mut buffered_stream = self.hot.pop().unwrap();
+        let count_opt = self
+            .stream_stat
+            .count_stream_row(buffered_stream.stream_id, num_rows_to_fetch);
+        if let Some(count) = count_opt {
+            ROW_PICKED_IN_SINGLE_STREAM_HISTOGRAM.observe(count as f64);
+        }
 
         let record_batch = if self.record_batch_builder.is_empty() {
             let record_batch = buffered_stream.take_record_batch_slice(num_rows_to_fetch);
@@ -804,6 +856,11 @@ impl MergeIterator {
         self.metrics.times_fetch_row_from_multiple += 1;
 
         let mut hottest = self.hot.pop().unwrap();
+        let count_opt = self.stream_stat.count_stream_row(hottest.stream_id, 1);
+        if let Some(count) = count_opt {
+            ROW_PICKED_IN_SINGLE_STREAM_HISTOGRAM.observe(count as f64);
+        }
+
         let row = hottest.next_row_in_buffer().unwrap();
         self.record_batch_builder
             .append_row_view(&row)

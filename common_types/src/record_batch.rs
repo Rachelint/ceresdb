@@ -114,7 +114,6 @@ impl RecordBatchData {
             .iter()
             .map(|column| column.to_arrow_array_ref())
             .collect();
-
         let arrow_record_batch =
             ArrowRecordBatch::try_new(arrow_schema, arrays).context(CreateArrow)?;
 
