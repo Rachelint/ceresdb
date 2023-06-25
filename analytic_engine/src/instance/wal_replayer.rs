@@ -14,7 +14,7 @@ use common_util::error::BoxError;
 use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use prometheus::{exponential_buckets, register_histogram, Histogram};
-use snafu::{ResultExt, OptionExt};
+use snafu::{OptionExt, ResultExt};
 use table_engine::table::TableId;
 use tokio::sync::MutexGuard;
 use wal::{

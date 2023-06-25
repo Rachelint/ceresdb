@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 //! Region context
 
@@ -13,7 +13,7 @@ use common_util::{
     define_result,
     error::{BoxError, GenericError},
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use message_queue::{MessageQueue, Offset};
 use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
 use tokio::sync::{Mutex, RwLock};
@@ -292,6 +292,11 @@ impl TableMeta {
     ) -> std::result::Result<(), String> {
         let mut inner = self.inner.lock().await;
 
+        info!(
+            "Mark deleted entries to table begin, sequence_num:{sequence_num}, table_id:{}, mapping:{:?}",
+            self.table_id, inner.start_sequence_offset_mapping
+        );
+
         // Check the set sequence num's validity.
         if sequence_num > inner.next_sequence_num {
             return Err(format!(
@@ -324,6 +329,11 @@ impl TableMeta {
         inner
             .start_sequence_offset_mapping
             .retain(|k, _| k >= &sequence_num);
+
+        info!(
+            "Mark deleted entries to table finish, sequence_num:{sequence_num}, table_id:{}, mapping:{:?}",
+            self.table_id, inner.start_sequence_offset_mapping
+        );
 
         Ok(())
     }

@@ -576,23 +576,20 @@ impl<M: MessageQueue> Region<M> {
         table_id: TableId,
         sequence_num: SequenceNumber,
     ) -> Result<()> {
-        let (snapshot, synchronizer) = {
+        let (region_id, snapshot, synchronizer) = {
             let inner = self.inner.write().await;
-
-            info!(
-                "Mark deleted entries to sequence num:{}, region id:{}, table id:{}",
-                sequence_num,
-                inner.region_context.region_id(),
-                table_id
-            );
-
             inner.mark_delete_to(table_id, sequence_num).await?;
 
             (
+                inner.region_context.region_id(),
                 inner.make_meta_snapshot().await,
                 self.snapshot_synchronizer.lock().await,
             )
         };
+
+        info!(
+            "Mark deleted entries to sequence_num:{sequence_num}, region_id:{region_id}, table_id:{table_id}, snapshot:{snapshot:?}",
+        );
 
         // TODO: a temporary and rough implementation...
         // just need to sync the snapshot while dropping table, but now we sync while
