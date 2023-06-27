@@ -917,6 +917,7 @@ mod tests {
     };
 
     #[tokio::test]
+    #[ignore = "this test need a kafka cluster"]
     async fn test_region_kafka_impl() {
         // Test region
         let mut config = Config::default();
