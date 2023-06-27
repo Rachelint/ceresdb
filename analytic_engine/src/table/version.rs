@@ -662,7 +662,7 @@ impl TableVersion {
             .total_wrote_data_encode_size()
     }
 
-    pub fn mutables_num(&self) -> uszie {
+    pub fn mutables_num(&self) -> usize {
         self.inner.read().unwrap().memtable_view.mutables.0.len()
     }
 
