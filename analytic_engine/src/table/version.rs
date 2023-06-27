@@ -662,6 +662,10 @@ impl TableVersion {
             .total_wrote_data_encode_size()
     }
 
+    pub fn mutables_num(&self) -> uszie {
+        self.inner.read().unwrap().memtable_view.mutables.0.len()
+    }
+
     /// Switch all mutable memtables or just return the suggested segment
     /// duration if sampling memtable is still active.
     ///

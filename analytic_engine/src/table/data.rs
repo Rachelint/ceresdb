@@ -448,14 +448,17 @@ impl TableData {
             self.current_version().mutable_wrote_data_encode_size();
         let total_wrote_data_size = self.current_version().total_wrote_data_size();
         let total_wrote_data_encode_size = self.current_version().total_wrote_data_encode_size();
+        let mutables_num = self.current_version().mutables_num();
 
         let in_flush = serial_exec.flush_scheduler().is_in_flush();
         // Inspired by https://github.com/facebook/rocksdb/blob/main/include/rocksdb/write_buffer_manager.h#L94
         if mutable_usage > mutable_limit && !in_flush {
             info!(
-                "TableData should flush by mutable limit, table:{}, table_id:{}, mutable_usage:{}, mutable_limit: {}, total_usage:{}, max_write_buffer_size:{}, wrote_data_size:{}, wrote_data_encode_size:{}, total_wrote_data_size:{}, total_data_encode_size:{}",
+                "TableData should flush by mutable limit, table:{}, table_id:{}, mutable_usage:{}, mutable_limit: {}, total_usage:{}, max_write_buffer_size:{}, wrote_data_size:{}, wrote_data_encode_size:{}, total_wrote_data_size:{}, total_data_encode_size:{},
+                mutables_num:{}",
                 self.name, self.id, mutable_usage, mutable_limit, total_usage, max_write_buffer_size,
                 mutable_wrote_data_size, mutable_wrote_data_encode_size, total_wrote_data_size, total_wrote_data_encode_size,
+                mutables_num
             );
             return true;
         }
@@ -473,9 +476,11 @@ impl TableData {
 
         if should_flush {
             info!(
-                "TableData should flush by total usage, table:{}, table_id:{}, mutable_usage:{}, mutable_limit: {}, total_usage:{}, max_write_buffer_size:{}, wrote_data_size:{}, wrote_data_encode_size:{}, total_wrote_data_size:{}, total_data_encode_size:{}",
+                "TableData should flush by total usage, table:{}, table_id:{}, mutable_usage:{}, mutable_limit: {}, total_usage:{}, max_write_buffer_size:{}, wrote_data_size:{}, wrote_data_encode_size:{}, total_wrote_data_size:{}, total_data_encode_size:{},
+                mutables_num:{}",
                 self.name, self.id, mutable_usage, mutable_limit, total_usage, max_write_buffer_size,
                 mutable_wrote_data_size, mutable_wrote_data_encode_size, total_wrote_data_size, total_wrote_data_encode_size,
+                mutables_num
             );
         }
 
