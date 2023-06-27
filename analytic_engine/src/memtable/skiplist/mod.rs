@@ -7,6 +7,7 @@ pub mod iter;
 
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     convert::TryInto,
     sync::atomic::{self, AtomicU64, AtomicUsize},
 };
@@ -14,8 +15,10 @@ use std::{
 use arena::{Arena, BasicStats};
 use common_types::{
     bytes::Bytes,
+    datum::Datum,
     row::{contiguous::ContiguousRowWriter, Row},
     schema::Schema,
+    string::StringBytes,
     SequenceNumber,
 };
 use common_util::{codec::Encoder, error::BoxError};
@@ -31,7 +34,7 @@ use crate::memtable::{
 };
 
 /// MemTable implementation based on skiplist
-pub struct SkiplistMemTable<A: Arena<Stats = BasicStats> + Clone + Sync + Send> {
+pub struct SkiplistMemTable<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send> {
     /// Schema of this memtable, is immutable.
     schema: Schema,
     skiplist: Skiplist<BytewiseComparator, A>,
@@ -41,10 +44,13 @@ pub struct SkiplistMemTable<A: Arena<Stats = BasicStats> + Clone + Sync + Send> 
 
     wrote_data_size: AtomicUsize,
     wrote_data_encode_size: AtomicUsize,
+
+    dictionary: std::sync::Mutex<HashMap<&'a str, u32>>,
+    words: std::sync::Mutex<Vec<StringBytes>>,
 }
 
-impl<A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
-    for SkiplistMemTable<A>
+impl<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
+    for SkiplistMemTable<'a, A>
 {
     fn schema(&self) -> &Schema {
         &self.schema
@@ -85,6 +91,30 @@ impl<A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
         // Stats data size.
         self.wrote_data_size
             .fetch_add(row.size(), atomic::Ordering::SeqCst);
+
+        // Mock the dictionary.
+        let mut new_row = Vec::with_capacity(row.num_columns());
+        for col in row.iter() {
+            let new_col = match &col {
+                common_types::datum::Datum::String(v) => {
+                    let mut dict = self.dictionary.lock().unwrap();
+                    let mut words = self.words.lock().unwrap();
+                    if dict.contains_key(v.as_str()) {
+                        Datum::UInt32(0)
+                    } else {
+                        words.push(v.clone());
+                        let word = words.last().unwrap().as_str();
+                        dict.insert(word, (word.len() - 1) as u32);
+                        Datum::UInt32(0)
+                    }
+                }
+                _ => col.clone(),
+            };
+
+            new_row.push(new_col);
+        }
+
+        let row = &Row::from_datums(new_row);
         let key_encoder = ComparableInternalKey::new(sequence, schema);
 
         let internal_key = &mut ctx.key_buf;
@@ -133,7 +163,15 @@ impl<A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
     fn approximate_memory_usage(&self) -> usize {
         // Mem size of skiplist is u32, need to cast to usize
         match self.skiplist.mem_size().try_into() {
-            Ok(v) => v,
+            Ok(v) => {
+                let memtable_size: usize = v;
+                let dict = self.dictionary.lock().unwrap();
+                let words = self.words.lock().unwrap();
+                let dict_size = dict.iter().map(|(k, v)| 16 + 4).sum::<usize>();
+                let words_size: usize = words.iter().map(|w| w.len()).sum();
+
+                memtable_size + dict_size + words_size
+            }
             // The skiplist already use bytes larger than usize
             Err(_) => usize::MAX,
         }
