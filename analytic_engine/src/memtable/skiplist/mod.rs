@@ -34,7 +34,7 @@ use crate::memtable::{
 };
 
 /// MemTable implementation based on skiplist
-pub struct SkiplistMemTable<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send> {
+pub struct SkiplistMemTable<A: Arena<Stats = BasicStats> + Clone + Sync + Send> {
     /// Schema of this memtable, is immutable.
     schema: Schema,
     skiplist: Skiplist<BytewiseComparator, A>,
@@ -45,12 +45,12 @@ pub struct SkiplistMemTable<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Se
     wrote_data_size: AtomicUsize,
     wrote_data_encode_size: AtomicUsize,
 
-    dictionary: std::sync::Mutex<HashMap<&'a str, u32>>,
-    words: std::sync::Mutex<Vec<StringBytes>>,
+    dictionary: std::sync::Mutex<HashMap<Bytes, u32>>,
+    words: std::sync::Mutex<Vec<Bytes>>,
 }
 
-impl<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
-    for SkiplistMemTable<'a, A>
+impl<A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
+    for SkiplistMemTable<A>
 {
     fn schema(&self) -> &Schema {
         &self.schema
@@ -80,7 +80,7 @@ impl<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
     // Now the caller is required to encode the row into the `value_buf` in
     // PutContext first.
     fn put(
-        &self,
+        &'_ self,
         ctx: &mut PutContext,
         sequence: KeySequence,
         row: &Row,
@@ -99,12 +99,11 @@ impl<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
                 common_types::datum::Datum::String(v) => {
                     let mut dict = self.dictionary.lock().unwrap();
                     let mut words = self.words.lock().unwrap();
-                    if dict.contains_key(v.as_str()) {
+                    if dict.contains_key(&v.0) {
                         Datum::UInt32(0)
                     } else {
-                        words.push(v.clone());
-                        let word = words.last().unwrap().as_str();
-                        dict.insert(word, (word.len() - 1) as u32);
+                        words.push(v.0.clone());
+                        dict.insert(v.0.clone(), (words.len() - 1) as u32);
                         Datum::UInt32(0)
                     }
                 }
@@ -167,8 +166,8 @@ impl<'a, A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
                 let memtable_size: usize = v;
                 let dict = self.dictionary.lock().unwrap();
                 let words = self.words.lock().unwrap();
-                let dict_size = dict.iter().map(|(k, v)| 16 + 4).sum::<usize>();
-                let words_size: usize = words.iter().map(|w| w.len()).sum();
+                let dict_size = dict.iter().map(|(k, v)| 32 + 4).sum::<usize>();
+                let words_size: usize = words.iter().map(|w| w.len() + 32).sum();
 
                 memtable_size + dict_size + words_size
             }

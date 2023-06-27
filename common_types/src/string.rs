@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 //! Bytes that can safely cast to str/string.
 
@@ -22,7 +22,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// String using [crate::bytes::Bytes] as storage so it can be cast into `Bytes`
 /// and clone like `Bytes`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
-pub struct StringBytes(Bytes);
+pub struct StringBytes(pub Bytes);
 
 impl StringBytes {
     pub fn new() -> StringBytes {
