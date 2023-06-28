@@ -517,18 +517,7 @@ impl RegionContextBuilder {
             .entry(delta.table_id)
             .or_insert_with(TableMetaInner::default);
 
-        ensure!(table_meta.next_sequence_num < delta.sequence_num + 1, Build { msg: format!("apply delta failed, 
-                next sequence number in delta should't be less than or equal to the one in builder, but now are:{} and {}",
-                delta.sequence_num + 1,
-                table_meta.next_sequence_num,
-            ) });
         table_meta.next_sequence_num = delta.sequence_num + 1;
-
-        ensure!(table_meta.current_high_watermark < delta.offset + 1, Build { msg: format!("apply delta failed, 
-                high watermark in delta should't be less than or equal to the one in builder, but now are:{} and {}",
-                delta.offset + 1,
-                table_meta.current_high_watermark,
-            ) });
         table_meta.current_high_watermark = delta.offset + 1;
 
         // Because recover from the `region_safe_delete_offset`, some outdated logs will
