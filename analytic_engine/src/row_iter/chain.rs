@@ -203,6 +203,8 @@ struct Metrics {
     /// Inited time of the iterator.
     #[metric(duration)]
     since_init: Duration,
+    #[metric(duration)]
+    scan_duration: Duration,
     #[metric(collector)]
     metrics_collector: Option<MetricsCollector>,
 }
@@ -220,6 +222,7 @@ impl Metrics {
             total_rows_fetched: 0,
             since_create: Duration::default(),
             since_init: Duration::default(),
+            scan_duration: Duration::default(),
             metrics_collector,
         }
     }
@@ -234,6 +237,7 @@ impl fmt::Debug for Metrics {
             .field("total_rows_fetched", &self.total_rows_fetched)
             .field("duration_since_create", &self.since_create)
             .field("duration_since_init", &self.since_init)
+            .field("scan_duration", &self.scan_duration)
             .finish()
     }
 }
@@ -296,6 +300,7 @@ impl RecordBatchWithKeyIterator for ChainIterator {
 
         while self.next_stream_idx < self.streams.len() {
             let read_stream = &mut self.streams[self.next_stream_idx];
+            let scan_start = Instant::now();
             let sequenced_record_batch = read_stream
                 .next()
                 .await
@@ -306,6 +311,7 @@ impl RecordBatchWithKeyIterator for ChainIterator {
                 Some(v) => {
                     self.metrics.total_rows_fetched += v.num_rows();
                     self.metrics.total_batch_fetched += 1;
+                    self.metrics.scan_duration += scan_start.elapsed();
 
                     if v.num_rows() > 0 {
                         return Ok(Some(v.record_batch));
