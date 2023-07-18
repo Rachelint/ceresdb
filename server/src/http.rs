@@ -11,7 +11,7 @@ use analytic_engine::setup::OpenedWals;
 use common_types::bytes::Bytes;
 use common_util::{
     error::{BoxError, GenericError},
-    runtime::Runtime,
+    runtime::{Runtime, RuntimeRef},
 };
 use log::{error, info};
 use logger::RuntimeLevel;
@@ -254,18 +254,28 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .and(extract_request)
             .and(self.with_context())
             .and(self.with_proxy())
-            .and_then(|req, ctx, proxy: Arc<Proxy<Q>>| async move {
-                let result = proxy
-                    .handle_http_sql_query(&ctx, req)
-                    .await
-                    .map(convert_output)
-                    .box_err()
-                    .context(HandleRequest);
-                match result {
-                    Ok(res) => Ok(reply::json(&res)),
-                    Err(e) => Err(reject::custom(e)),
-                }
-            })
+            .and(self.with_read_runtime())
+            .and_then(
+                |req, ctx, proxy: Arc<Proxy<Q>>, runtime: RuntimeRef| async move {
+                    let result = runtime
+                        .spawn(async move {
+                            proxy
+                                .handle_http_sql_query(&ctx, req)
+                                .await
+                                .map(convert_output)
+                                .box_err()
+                                .context(HandleRequest)
+                        })
+                        .await
+                        .box_err()
+                        .context(HandleRequest);
+                    match result {
+                        Ok(Ok(res)) => Ok(reply::json(&res)),
+                        Ok(Err(e)) => Err(reject::custom(e)),
+                        Err(e) => Err(reject::custom(e)),
+                    }
+                },
+            )
     }
 
     // GET /route
@@ -586,6 +596,13 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
     ) -> impl Filter<Extract = (Arc<RuntimeLevel>,), Error = Infallible> + Clone {
         let log_runtime = self.log_runtime.clone();
         warp::any().map(move || log_runtime.clone())
+    }
+
+    fn with_read_runtime(
+        &self,
+    ) -> impl Filter<Extract = (Arc<Runtime>,), Error = Infallible> + Clone {
+        let runtime = self.engine_runtimes.read_runtime.clone();
+        warp::any().map(move || runtime.clone())
     }
 }
 
