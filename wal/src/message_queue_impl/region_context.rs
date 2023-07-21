@@ -13,7 +13,7 @@ use common_util::{
     define_result,
     error::{BoxError, GenericError},
 };
-use log::{debug, warn};
+use log::{debug, warn, info};
 use message_queue::{MessageQueue, Offset};
 use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
 use tokio::sync::{Mutex, RwLock};
@@ -659,7 +659,8 @@ impl TableWriter {
                 table_id,
                 msg: "produce messages failed",
             })?;
-
+        
+        info!("TableWriter write, offsets:{:?} ", offsets);
         ensure!(
             !offsets.is_empty(),
             WriteNoCause {
