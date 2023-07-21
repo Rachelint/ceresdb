@@ -198,7 +198,7 @@ impl<M: MessageQueue> Region<M> {
         let log_cleaner = Mutex::new(LogCleaner::new(region_id, message_queue.clone(), log_topic));
 
         info!(
-            "Finish opening region in namespace, namespace:{}, region id:{}",
+            "Finish opening region in namespace, namespace:{}, region id:{}, region_info:{inner:?}",
             namespace, region_id
         );
 
@@ -690,6 +690,7 @@ impl<M: MessageQueue> Region<M> {
 }
 
 /// Region's inner, all methods of [Region] are mainly implemented in it.
+#[derive(Debug)]
 struct RegionInner<M> {
     /// Region meta data(such as, tables' next sequence numbers)
     region_context: RegionContext,
