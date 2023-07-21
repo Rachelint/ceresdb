@@ -199,16 +199,18 @@ impl<M: MessageQueue> Region<M> {
         ));
         let log_cleaner = Mutex::new(LogCleaner::new(region_id, message_queue.clone(), log_topic));
 
-        info!(
-            "Finish opening region in namespace, namespace:{}, region id:{}, region_info:{inner:?}",
-            namespace, region_id
-        );
-
-        Ok(Region {
+        let region = Region {
             inner,
             snapshot_synchronizer,
             log_cleaner,
-        })
+        };
+        let snapshot = region.make_meta_snapshot().await;
+        info!(
+            "Finish opening region in namespace, namespace:{}, region id:{}, region_snapshot:{snapshot:?}",
+            namespace, region_id
+        );
+
+        Ok(region)
     }
 
     async fn recover_region_meta_from_meta(
