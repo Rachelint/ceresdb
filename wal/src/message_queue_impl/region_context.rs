@@ -377,7 +377,6 @@ impl TableMeta {
 }
 
 /// Table meta data, will be updated atomically by mutex.
-#[derive(Debug)]
 struct TableMetaInner {
     /// Next sequence number for the new log.
     ///
@@ -399,7 +398,7 @@ struct TableMetaInner {
     start_sequence_offset_mapping: BTreeMap<SequenceNumber, Offset>,
 }
 
-impl std::fmt::Display for TableMetaInner {
+impl std::fmt::Debug for TableMetaInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let may_safe_delete_offset = self
             .start_sequence_offset_mapping
