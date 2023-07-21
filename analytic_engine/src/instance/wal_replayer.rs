@@ -203,7 +203,7 @@ impl TableBasedReplay {
         let mut serial_exec = table_data.serial_exec.lock().await;
         let mut log_entry_buf = VecDeque::with_capacity(context.wal_replay_batch_size);
         loop {
-            // fetch entries to log_entry_buf
+            // Fetch entries to log_entry_buf
             let _timer = PULL_LOGS_DURATION_HISTOGRAM.start_timer();
             let decoder = WalDecoder::default();
             log_entry_buf = log_iter

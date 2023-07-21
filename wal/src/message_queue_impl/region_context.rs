@@ -399,6 +399,20 @@ struct TableMetaInner {
     start_sequence_offset_mapping: BTreeMap<SequenceNumber, Offset>,
 }
 
+impl std::fmt::Display for TableMetaInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let may_safe_delete_offset = self
+            .start_sequence_offset_mapping
+            .get(&self.latest_marked_deleted);
+        f.debug_struct("TableMetaInner")
+            .field("next_sequence_num", &self.next_sequence_num)
+            .field("latest_marked_deleted", &self.latest_marked_deleted)
+            .field("current_high_watermark", &self.current_high_watermark)
+            .field("maybe_safe_delete_offset", &may_safe_delete_offset)
+            .finish()
+    }
+}
+
 /// Self defined default implementation
 ///
 /// Because `SequenceNumber::MIN` is used as a special value, the normal value
