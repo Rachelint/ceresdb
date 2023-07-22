@@ -825,6 +825,7 @@ impl WalManager for RocksImpl {
         } else {
             None
         };
+        let rocksdb_stats = rocksdb_stats.unwrap_or_default();
 
         // Wal stats.
         let table_units = self.table_units.read().unwrap();
@@ -834,10 +835,7 @@ impl WalManager for RocksImpl {
         }
         let wal_stats = wal_stats.join("\n");
 
-        let stats = format!(
-            "#RocksDB stats:\n{rocksdb_stats:?}\n\n
-                                    #Wal stats:\n{wal_stats:?}\n"
-        );
+        let stats = format!("#RocksDB stats:\n{rocksdb_stats}\n#RocksDBWal stats:\n{wal_stats}\n");
 
         Some(stats)
     }
