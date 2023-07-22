@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 //! WalManager abstraction
 
@@ -316,7 +316,7 @@ pub trait WalManager: Send + Sync + fmt::Debug + 'static {
     async fn scan(&self, ctx: &ScanContext, req: &ScanRequest) -> Result<BatchLogIteratorAdapter>;
 
     /// Get statistics
-    fn get_statistics(&self) -> Option<String> {
+    async fn get_statistics(&self) -> Option<String> {
         None
     }
 }
