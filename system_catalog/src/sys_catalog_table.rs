@@ -16,7 +16,7 @@ use common_types::{
     request_id::RequestId,
     row::{Row, RowGroup, RowGroupBuilder},
     schema::{self, Schema},
-    table::DEFAULT_SHARD_ID,
+    table::DEFAULT_SYSTEM_SHARD_ID,
     time::Timestamp,
 };
 use common_util::{
@@ -270,7 +270,7 @@ impl SysCatalogTable {
             table_name: SYS_CATALOG_TABLE_NAME.to_string(),
             table_id: SYS_CATALOG_TABLE_ID,
             engine: table_engine.engine_type().to_string(),
-            shard_id: DEFAULT_SHARD_ID,
+            shard_id: DEFAULT_SYSTEM_SHARD_ID,
         };
 
         let table_opt = table_engine
@@ -310,7 +310,7 @@ impl SysCatalogTable {
             engine: table_engine.engine_type().to_string(),
             options,
             state: TableState::Stable,
-            shard_id: DEFAULT_SHARD_ID,
+            shard_id: DEFAULT_SYSTEM_SHARD_ID,
         };
 
         let table = table_engine
