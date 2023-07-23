@@ -1,4 +1,4 @@
-// Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
 
 //! Payloads to write to wal
 
@@ -147,7 +147,7 @@ impl<'a> From<&'a table_requests::WriteRequest> for WritePayload<'a> {
 }
 
 /// Payload decoded from wal
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ReadPayload {
     Write { row_group: RowGroup },
     AlterSchema { schema: Schema },

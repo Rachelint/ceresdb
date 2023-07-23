@@ -417,7 +417,9 @@ impl Instance {
             table_ctxs,
         };
 
-        let shard_result = self.do_open_tables_of_shard(shard_ctx).await?;
+        let shard_result = self
+            .do_open_tables_of_shard(shard_ctx, self.runtimes.io_runtime.clone())
+            .await?;
 
         // Insert opened tables to spaces.
         for ((table_name, table_id), space) in spaces_of_tables {

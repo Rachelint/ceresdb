@@ -8,6 +8,7 @@ use std::{
 };
 
 use common_types::table::ShardId;
+use common_util::runtime::RuntimeRef;
 use log::{error, info};
 use object_store::ObjectStoreRef;
 use snafu::ResultExt;
@@ -137,6 +138,7 @@ impl Instance {
     pub async fn do_open_tables_of_shard(
         self: &Arc<Self>,
         context: TablesOfShardContext,
+        io_runtime: RuntimeRef,
     ) -> Result<OpenTablesOfShardResult> {
         let mut shard_opener = ShardOpener::init(
             context,
@@ -146,6 +148,7 @@ impl Instance {
             self.make_flusher(),
             self.max_retry_flush_limit,
             self.recover_mode,
+            io_runtime,
         )?;
 
         shard_opener.open().await
@@ -198,6 +201,7 @@ struct ShardOpener {
     flusher: Flusher,
     max_retry_flush_limit: usize,
     recover_mode: RecoverMode,
+    io_runtime: RuntimeRef,
 }
 
 impl ShardOpener {
@@ -209,6 +213,7 @@ impl ShardOpener {
         flusher: Flusher,
         max_retry_flush_limit: usize,
         recover_mode: RecoverMode,
+        io_runtime: RuntimeRef,
     ) -> Result<Self> {
         let mut stages = HashMap::with_capacity(shard_context.table_ctxs.len());
         for table_ctx in shard_context.table_ctxs {
@@ -236,6 +241,7 @@ impl ShardOpener {
             flusher,
             max_retry_flush_limit,
             recover_mode,
+            io_runtime,
         })
     }
 
@@ -378,6 +384,7 @@ impl ShardOpener {
             self.flusher.clone(),
             self.max_retry_flush_limit,
             replay_mode,
+            self.io_runtime.clone(),
         );
         let mut table_results = wal_replayer.replay().await?;
 

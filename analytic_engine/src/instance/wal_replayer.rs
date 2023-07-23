@@ -10,7 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use common_types::{schema::IndexInWriterSchema, table::ShardId};
-use common_util::error::BoxError;
+use common_util::{error::BoxError, runtime::RuntimeRef};
 use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use prometheus::{
@@ -76,6 +76,7 @@ impl<'a> WalReplayer<'a> {
         flusher: Flusher,
         max_retry_flush_limit: usize,
         replay_mode: ReplayMode,
+        io_runtime: RuntimeRef,
     ) -> Self {
         let context = ReplayContext {
             shard_id,
@@ -83,6 +84,7 @@ impl<'a> WalReplayer<'a> {
             wal_replay_batch_size,
             flusher,
             max_retry_flush_limit,
+            io_runtime,
         };
 
         let replay = Self::build_replay(replay_mode);
@@ -126,6 +128,7 @@ pub struct ReplayContext {
     pub wal_replay_batch_size: usize,
     pub flusher: Flusher,
     pub max_retry_flush_limit: usize,
+    pub io_runtime: RuntimeRef,
 }
 
 impl Display for ReplayContext {
@@ -288,7 +291,39 @@ impl RegionBasedReplay {
             .await
             .box_err()
             .context(ReplayWalWithCause { msg: None })?;
-        let mut log_entry_buf = VecDeque::with_capacity(context.wal_replay_batch_size);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(500);
+
+        // Fetch logs to log_entry_buf in io runtime.
+        let wal_replay_batch_size = context.wal_replay_batch_size;
+        let fetch_logs = context.io_runtime.spawn(async move {
+            loop {
+                let mut log_entry_buf = VecDeque::with_capacity(wal_replay_batch_size);
+                let _timer = PULL_LOGS_DURATION_HISTOGRAM.start_timer();
+                let decoder = WalDecoder::default();
+                let result = log_iter
+                    .next_log_entries(decoder, log_entry_buf)
+                    .await
+                    .box_err()
+                    .context(ReplayWalWithCause { msg: None });
+
+                match result {
+                    Ok(mut log_entry_buf) => {
+                        if log_entry_buf.is_empty() {
+                            return Ok(());
+                        }
+
+                        let send_logs = log_entry_buf.drain(..).collect::<VecDeque<_>>();
+                        if let Err(e) = tx.send(send_logs).await {
+                            error!("Replay wal logs fetch logs finish, err:{:?}", e);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        });
 
         // Lock all related tables.
         let mut serial_exec_ctxs = HashMap::with_capacity(table_datas.len());
@@ -303,22 +338,28 @@ impl RegionBasedReplay {
 
         // Split and replay logs.
         loop {
-            let _timer = PULL_LOGS_DURATION_HISTOGRAM.start_timer();
-            let decoder = WalDecoder::default();
-            log_entry_buf = log_iter
-                .next_log_entries(decoder, log_entry_buf)
+            let recv_logs = rx.recv().await;
+            if let Some(log_entry_buf) = recv_logs {
+                let _timer = APPLY_LOGS_DURATION_HISTOGRAM.start_timer();
+                if let Err(e) = Self::replay_single_batch(
+                    context,
+                    &log_entry_buf,
+                    &mut serial_exec_ctxs,
+                    faileds,
+                )
                 .await
-                .box_err()
-                .context(ReplayWalWithCause { msg: None })?;
-
-            if log_entry_buf.is_empty() {
+                {
+                    return Err(e);
+                }
+            } else {
                 break;
             }
-
-            let _timer = APPLY_LOGS_DURATION_HISTOGRAM.start_timer();
-            Self::replay_single_batch(context, &log_entry_buf, &mut serial_exec_ctxs, faileds)
-                .await?;
         }
+
+        fetch_logs
+            .await
+            .box_err()
+            .context(ReplayWalWithCause { msg: None })??;
 
         Ok(())
     }
