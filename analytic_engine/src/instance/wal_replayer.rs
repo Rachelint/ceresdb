@@ -337,10 +337,6 @@ impl RegionBasedReplay {
         for table_batch in table_batches {
             // Some tables may have failed in previous replay, ignore them.
             if faileds.contains_key(&table_batch.table_id) {
-                info!(
-                    "RegionReplayer found an extra table, table_id:{}",
-                    table_batch.table_id
-                );
                 continue;
             }
 
@@ -360,6 +356,11 @@ impl RegionBasedReplay {
                 if let Err(e) = result {
                     faileds.insert(table_batch.table_id, e);
                 }
+            } else {
+                info!(
+                    "RegionReplayer found an extra table, table_id:{}",
+                    table_batch.table_id
+                );
             }
         }
 
