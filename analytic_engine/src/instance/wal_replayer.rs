@@ -13,7 +13,9 @@ use common_types::{schema::IndexInWriterSchema, table::ShardId};
 use common_util::error::BoxError;
 use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
-use prometheus::{exponential_buckets, register_histogram, Histogram};
+use prometheus::{
+    exponential_buckets, register_histogram, register_int_counter, Histogram, IntCounter,
+};
 use snafu::ResultExt;
 use table_engine::table::TableId;
 use tokio::sync::MutexGuard;
@@ -48,6 +50,11 @@ lazy_static! {
         "wal_replay_apply_logs_duration",
         "Histogram for apply logs duration in wal replay in seconds",
         exponential_buckets(0.01, 2.0, 13).unwrap()
+    )
+    .unwrap();
+    static ref DELETED_LOG_COUNTER: IntCounter = register_int_counter!(
+        "wal_deleted_log_counter",
+        "Histogram for apply logs duration in wal replay in seconds"
     )
     .unwrap();
 }
@@ -437,6 +444,7 @@ async fn replay_table_log_entries(
 
         // Ignore too old logs(sequence <= `flushed_sequence`).
         if sequence <= flushed_sequence {
+            DELETED_LOG_COUNTER.inc();
             continue;
         }
 
