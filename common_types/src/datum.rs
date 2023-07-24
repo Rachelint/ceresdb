@@ -1354,9 +1354,10 @@ pub mod arrow_convert {
 
 #[cfg(test)]
 mod tests {
-    use datafusion::scalar::ScalarValue;
-    use siphasher::sip::SipHasher13;
-    use std::hash::{Hash, Hasher};
+    
+
+    
+    
 
     use super::*;
 
@@ -1585,8 +1586,8 @@ mod tests {
     // fn test_hash() {
     //     let a = DatumView::Int32(142);
     //     let b = ScalarValue::Int32(Some(142));
-    //     println!("dv:{}, sc:{}, Some:{}", get_hash(&a, 0), get_hash(&b, 0), get_hash(&Some(142), 0));
-    // } 
+    //     println!("dv:{}, sc:{}, Some:{}", get_hash(&a, 0), get_hash(&b, 0),
+    // get_hash(&Some(142), 0)); }
 
     // fn get_hash<V: Hash>(value: &V, seed: u128) -> u64 {
     //     let key0 = (seed >> 64) as u64;

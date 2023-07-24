@@ -6,10 +6,7 @@ use std::{fmt, ops::Deref};
 
 use arrow::array::ArrayRef as DfArrayRef;
 use common_types::{column::ColumnBlock, datum::DatumView};
-use common_util::{
-    define_result,
-    error::{BoxError, GenericError, GenericResult},
-};
+use common_util::{define_result, error::GenericError};
 use datafusion::{
     error::{DataFusionError, Result as DfResult},
     physical_plan::Accumulator as DfAccumulator,
@@ -17,7 +14,7 @@ use datafusion::{
 };
 use snafu::Snafu;
 
-use crate::functions::{ScalarValue, ScalarValueRef};
+use crate::functions::ScalarValue;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -31,6 +28,7 @@ pub enum Error {
 
 define_result!(Error);
 
+// TODO: Use `Datum` rather than `ScalarValue`.
 pub struct State(Vec<DfScalarValue>);
 
 impl State {
@@ -88,6 +86,7 @@ pub trait Accumulator: Send + Sync + fmt::Debug {
     /// Returns the state of the accumulator at the end of the accumulation.
     // in the case of an average on which we track `sum` and `n`, this function
     // should return a vector of two values, sum and n.
+    // TODO: Use `Datum` rather than `ScalarValue`.
     fn state(&self) -> Result<State>;
 
     /// updates the accumulator's state from a vector of scalars.
@@ -97,6 +96,7 @@ pub trait Accumulator: Send + Sync + fmt::Debug {
     fn merge(&mut self, states: StateRef) -> Result<()>;
 
     /// returns its value based on its current state.
+    // TODO: Use `Datum` rather than `ScalarValue`.
     fn evaluate(&self) -> Result<ScalarValue>;
 }
 

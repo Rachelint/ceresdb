@@ -103,7 +103,7 @@ struct HllDistinct {
 }
 
 // binary datatype to scalarvalue.
-// TODO: Can we avoid clone?
+// TODO: maybe we can remove base64 encoding?
 impl HllDistinct {
     fn merge_impl(&mut self, states: StateRef) -> Result<()> {
         // The states are serialize from hll.
@@ -114,7 +114,7 @@ impl HllDistinct {
         let hll_bytes = base64::decode(hll_string).context(DecodeBase64)?;
         // Try to deserialize the hll.
         let hll = bincode::deserialize(&hll_bytes).context(DecodeHll)?;
-        
+
         // Merge the hll, note that the two hlls must created or serialized from the
         // same template hll.
         self.hll.merge(&hll);
@@ -132,6 +132,7 @@ impl fmt::Debug for HllDistinct {
 }
 
 impl Accumulator for HllDistinct {
+    // TODO: maybe we can remove base64 encoding?
     fn state(&self) -> aggregate::Result<State> {
         // Serialize `self.hll` to bytes.
         let buf = bincode::serialize(&self.hll).box_err().context(GetState)?;
