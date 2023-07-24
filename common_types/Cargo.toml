@@ -30,5 +30,6 @@ prost = { workspace = true }
 seahash = "4.1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
+siphasher = "0.3.10"
 snafu = { workspace = true }
 sqlparser = { workspace = true }
