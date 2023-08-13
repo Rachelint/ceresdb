@@ -114,6 +114,7 @@ impl ExecutionPlan for ResolvedPartitionedScan {
         self
     }
 
+    // TODO: check if it is right.
     fn schema(&self) -> SchemaRef {
         self.remote_exec_plans
             .first()

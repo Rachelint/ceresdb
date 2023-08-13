@@ -40,3 +40,4 @@ macros = { workspace = true }
 prometheus = { workspace = true }
 snafu = { workspace = true }
 table_engine = { workspace = true }
+trace_metric = { workspace = true }
