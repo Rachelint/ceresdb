@@ -13,3 +13,5 @@
 // limitations under the License.
 
 pub mod physical_plan;
+pub mod proto;
+pub mod resolver;

@@ -24,9 +24,8 @@ use table_engine::{
     table::{ReadRequest, TableRef},
 };
 
-use crate::dist_sql_query::{
-    partitioned_table_scan::{ResolvedPartitionedScan, UnresolvedPartitionedScan},
-    sub_table_scan::UnresolvedSubTableScan,
+use crate::dist_sql_query::physical_plan::{
+    ResolvedPartitionedScan, UnresolvedPartitionedScan, UnresolvedSubTableScan,
 };
 
 /// Resolver which makes datafuison dist query related plan executable.
@@ -212,9 +211,8 @@ mod test {
     use trace_metric::MetricsCollector;
 
     use crate::dist_sql_query::{
-        partitioned_table_scan::UnresolvedPartitionedScan,
+        physical_plan::{UnresolvedPartitionedScan, UnresolvedSubTableScan},
         resolver::{PartitionedScanResolver, ResolvedSubScanBuilder, SubScanResolver},
-        sub_table_scan::UnresolvedSubTableScan,
     };
 
     #[test]

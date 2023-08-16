@@ -95,7 +95,7 @@ dependencies = [
  "async-trait",
  "base64 0.13.1",
  "bytes_ext",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "codec",
  "common_types",
  "datafusion",
@@ -1276,7 +1276,7 @@ checksum = "8ef195bacb1ca0eb02d6a0562b09852941d01de2b962c7066c922115fab7dcb7"
 dependencies = [
  "arrow 38.0.0",
  "async-trait",
- "ceresdbproto",
+ "ceresdbproto 1.0.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "dashmap 5.4.0",
  "futures 0.3.28",
  "paste 1.0.12",
@@ -1298,6 +1298,17 @@ dependencies = [
  "serde",
  "sqlness",
  "tokio",
+]
+
+[[package]]
+name = "ceresdbproto"
+version = "1.0.10"
+dependencies = [
+ "prost",
+ "protoc-bin-vendored",
+ "tonic 0.8.3",
+ "tonic-build",
+ "walkdir",
 ]
 
 [[package]]
@@ -1511,7 +1522,7 @@ dependencies = [
  "async-trait",
  "bytes_ext",
  "catalog",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "common_types",
  "etcd-client",
  "future_ext",
@@ -1588,7 +1599,7 @@ dependencies = [
  "arrow 43.0.0",
  "arrow_ext",
  "bytes_ext",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "chrono",
  "datafusion",
  "hash_ext",
@@ -2339,10 +2350,13 @@ version = "1.2.6-alpha"
 dependencies = [
  "arrow 43.0.0",
  "catalog",
+ "ceresdbproto 1.0.10",
  "common_types",
  "datafusion",
+ "datafusion-proto",
  "generic_error",
  "insta",
+ "prost",
  "snafu 0.6.10",
  "table_engine",
  "trace_metric",
@@ -3889,7 +3903,7 @@ name = "meta_client"
 version = "1.2.6-alpha"
 dependencies = [
  "async-trait",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "common_types",
  "futures 0.3.28",
  "generic_error",
@@ -4417,7 +4431,7 @@ version = "1.2.6-alpha"
 dependencies = [
  "async-trait",
  "bytes",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "chrono",
  "clru",
  "crc",
@@ -5301,7 +5315,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "catalog",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "clru",
  "cluster",
  "common_types",
@@ -5421,7 +5435,7 @@ dependencies = [
  "arrow 43.0.0",
  "async-trait",
  "catalog",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "cluster",
  "codec",
  "common_types",
@@ -5732,7 +5746,7 @@ version = "1.2.6-alpha"
 dependencies = [
  "arrow_ext",
  "async-trait",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "common_types",
  "futures 0.3.28",
  "generic_error",
@@ -5861,7 +5875,7 @@ name = "router"
 version = "1.2.6-alpha"
 dependencies = [
  "async-trait",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "cluster",
  "common_types",
  "generic_error",
@@ -6229,7 +6243,7 @@ dependencies = [
  "async-trait",
  "bytes_ext",
  "catalog",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "clru",
  "cluster",
  "common_types",
@@ -6791,7 +6805,7 @@ dependencies = [
  "async-trait",
  "bytes_ext",
  "catalog",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "codec",
  "common_types",
  "futures 0.3.28",
@@ -6813,7 +6827,7 @@ dependencies = [
  "arrow_ext",
  "async-trait",
  "bytes_ext",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "common_types",
  "datafusion",
  "datafusion-proto",
@@ -7021,7 +7035,7 @@ dependencies = [
 name = "time_ext"
 version = "1.2.6-alpha"
 dependencies = [
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "chrono",
  "common_types",
  "macros",
@@ -7677,7 +7691,7 @@ version = "1.2.6-alpha"
 dependencies = [
  "async-trait",
  "bytes_ext",
- "ceresdbproto",
+ "ceresdbproto 1.0.10",
  "chrono",
  "codec",
  "common_types",
