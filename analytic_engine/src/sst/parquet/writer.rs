@@ -388,6 +388,7 @@ mod tests {
     use runtime::{self, Runtime};
     use table_engine::predicate::Predicate;
     use tempfile::tempdir;
+    use test_util::init_log_for_test;
 
     use super::*;
     use crate::{

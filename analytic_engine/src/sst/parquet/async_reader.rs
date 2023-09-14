@@ -41,7 +41,8 @@ use log::{debug, error};
 use object_store::{ObjectStoreRef, Path};
 use parquet::{
     arrow::{
-        async_reader::ParquetRecordBatchStream, ParquetRecordBatchStreamBuilder, ProjectionMask,
+        arrow_reader::RowSelection, async_reader::ParquetRecordBatchStream,
+        ParquetRecordBatchStreamBuilder, ProjectionMask,
     },
     errors::Result as ParquetResult,
     file::metadata::RowGroupMetaData,
@@ -68,9 +69,7 @@ use crate::{
             SstMetaData,
         },
         parquet::{
-            encoding::ParquetDecoder,
-            meta_data::{ParquetFilter, ParquetMetaDataRef},
-            row_group_cache::RowGroupCacheRef,
+            encoding::ParquetDecoder, meta_data::ParquetFilter, row_group_cache::RowGroupCacheRef,
             row_group_pruner::RowGroupPruner,
         },
         reader::{error::*, Result, SstReader},
