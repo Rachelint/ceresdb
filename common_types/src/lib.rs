@@ -1,24 +1,29 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Contains common types
 
 pub mod bitset;
-pub mod bytes;
-#[cfg(feature = "arrow")]
 pub mod column;
-#[cfg(feature = "arrow")]
+pub mod column_block;
 pub mod column_schema;
 pub mod datum;
-pub mod hash;
-pub mod hex;
-#[cfg(feature = "arrow")]
+pub(crate) mod hex;
 pub mod projected_schema;
-#[cfg(feature = "arrow")]
 pub mod record_batch;
 pub mod request_id;
-#[cfg(feature = "arrow")]
 pub mod row;
-#[cfg(feature = "arrow")]
 pub mod schema;
 pub mod string;
 pub mod table;
@@ -44,6 +49,7 @@ pub const NUM_ROWS_PER_ROW_GROUP: &str = "num_rows_per_row_group";
 pub const UPDATE_MODE: &str = "update_mode";
 pub const COMPRESSION: &str = "compression";
 pub const STORAGE_FORMAT: &str = "storage_format";
+pub const MEMTABLE_TYPE: &str = "memtable_type";
 
 #[cfg(any(test, feature = "test"))]
 pub mod tests;

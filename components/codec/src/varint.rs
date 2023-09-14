@@ -1,7 +1,19 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Varint for codec whose test is covered by compact/number.rs
-use common_types::bytes::{Buf, SafeBuf, SafeBufMut};
+use bytes_ext::{Buf, SafeBuf, SafeBufMut};
 use macros::define_result;
 use snafu::{Backtrace, ResultExt, Snafu};
 
@@ -9,13 +21,13 @@ use snafu::{Backtrace, ResultExt, Snafu};
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
     #[snafu(display("Failed to encode varint, err:{}", source))]
-    EncodeVarint { source: common_types::bytes::Error },
+    EncodeVarint { source: bytes_ext::Error },
 
     #[snafu(display("Insufficient bytes to decode value.\nBacktrace:\n{}", backtrace))]
     DecodeEmptyValue { backtrace: Backtrace },
 
     #[snafu(display("Insufficient bytes to decode value, err:{}", source))]
-    DecodeValue { source: common_types::bytes::Error },
+    DecodeValue { source: bytes_ext::Error },
 
     #[snafu(display("Value larger than 64 bits (overflow).\nBacktrace:\n{}", backtrace))]
     UvarintOverflow { backtrace: Backtrace },
@@ -36,7 +48,7 @@ define_result!(Error);
 //      return PutUvarint(buf, ux)
 // }
 // ```
-pub fn encode_varint<B: SafeBufMut>(buf: &mut B, value: i64) -> Result<()> {
+pub fn encode_varint<B: SafeBufMut>(buf: &mut B, value: i64) -> Result<usize> {
     let mut x = (value as u64) << 1;
     if value < 0 {
         x = !x;
@@ -59,13 +71,15 @@ pub fn encode_varint<B: SafeBufMut>(buf: &mut B, value: i64) -> Result<()> {
 // 	return i + 1
 // }
 // ```
-pub fn encode_uvarint<B: SafeBufMut>(buf: &mut B, mut x: u64) -> Result<()> {
+pub fn encode_uvarint<B: SafeBufMut>(buf: &mut B, mut x: u64) -> Result<usize> {
+    let mut num_bytes = 0;
     while x >= 0x80 {
         buf.try_put_u8(x as u8 | 0x80).context(EncodeVarint)?;
         x >>= 7;
+        num_bytes += 1;
     }
     buf.try_put_u8(x as u8).context(EncodeVarint)?;
-    Ok(())
+    Ok(num_bytes + 1)
 }
 
 // from https://golang.org/src/encoding/binary/varint.go?s=2955:2991#L84
@@ -143,7 +157,7 @@ pub fn decode_uvarint<B: Buf>(buf: &mut B) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use common_types::bytes::BytesMut;
+    use bytes_ext::BytesMut;
 
     use super::*;
 

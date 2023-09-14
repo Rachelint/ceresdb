@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! WalManager implementation based on RocksDB
 
@@ -14,9 +26,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use common_types::{
-    bytes::BytesMut, table::TableId, SequenceNumber, MAX_SEQUENCE_NUMBER, MIN_SEQUENCE_NUMBER,
-};
+use bytes_ext::BytesMut;
+use common_types::{table::TableId, SequenceNumber, MAX_SEQUENCE_NUMBER, MIN_SEQUENCE_NUMBER};
 use generic_error::BoxError;
 use log::{debug, info, warn};
 use rocksdb::{
@@ -31,7 +42,7 @@ use crate::{
     kv_encoder::{CommonLogEncoding, CommonLogKey, MaxSeqMetaEncoding, MaxSeqMetaValue, MetaKey},
     log_batch::{LogEntry, LogWriteBatch},
     manager::{
-        error::*, BatchLogIteratorAdapter, ReadContext, ReadRequest, RegionId, ScanContext,
+        self, error::*, BatchLogIteratorAdapter, ReadContext, ReadRequest, RegionId, ScanContext,
         ScanRequest, SyncLogIterator, WalLocation, WalManager, WriteContext,
     },
 };
@@ -52,6 +63,15 @@ struct TableUnit {
     runtime: Arc<Runtime>,
     /// Ensure the delete procedure to be sequential
     delete_lock: Mutex<()>,
+}
+
+impl std::fmt::Debug for TableUnit {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TableUnit")
+            .field("id", &self.id)
+            .field("next_sequence_num", &self.next_sequence_num)
+            .finish()
+    }
 }
 
 impl TableUnit {
@@ -126,7 +146,7 @@ impl TableUnit {
                 .context(Delete)?;
 
             // Update the max sequence number.
-            let meta_key = MetaKey { region_id: self.id };
+            let meta_key = MetaKey { table_id: self.id };
             let meta_value = MaxSeqMetaValue { max_seq };
             let (mut meta_key_buf, mut meta_value_buf) = (BytesMut::new(), BytesMut::new());
             self.max_seq_meta_encoding
@@ -183,6 +203,8 @@ impl TableUnit {
             ctx,
             batch.entries.len()
         );
+
+        manager::collect_write_log_metrics(batch);
 
         let entries_num = batch.len() as u64;
         let (wb, max_sequence_num) = {
@@ -432,7 +454,7 @@ impl RocksImpl {
         &self,
         table_max_seqs: &mut HashMap<TableId, SequenceNumber>,
     ) -> Result<()> {
-        let meta_key = MetaKey { region_id: 0 };
+        let meta_key = MetaKey { table_id: 0 };
         let mut start_boundary_key_buf = BytesMut::new();
         self.max_seq_meta_encoding
             .encode_key(&mut start_boundary_key_buf, &meta_key)?;
@@ -454,9 +476,24 @@ impl RocksImpl {
 
             let meta_key = self.max_seq_meta_encoding.decode_key(iter.key())?;
             let meta_value = self.max_seq_meta_encoding.decode_value(iter.value())?;
+            #[rustfmt::skip]
+            // FIXME: In some cases, the `flushed sequence` 
+            // may be greater than the `actual last sequence of written logs`.
+            // 
+            // Such as following case:
+            //  + Write wal logs failed(last sequence stored in memory will increase when write failed).
+            //  + Get last sequence from memory(greater then actual last sequence now).
+            //  + Mark the got last sequence as flushed sequence.
             table_max_seqs
-                .entry(meta_key.region_id)
+                .entry(meta_key.table_id)
                 .and_modify(|v| {
+                    if meta_value.max_seq > *v {
+                        warn!(
+                            "RocksDB WAL found flushed_seq greater than actual_last_sequence, 
+                        flushed_sequence:{}, actual_last_sequence:{}, table_id:{}",
+                            meta_value.max_seq, *v, meta_key.table_id
+                        );
+                    }
                     *v = meta_value.max_seq.max(*v);
                 })
                 .or_insert(meta_value.max_seq);
@@ -896,12 +933,26 @@ impl WalManager for RocksImpl {
         ))
     }
 
-    fn get_statistics(&self) -> Option<String> {
-        if let Some(stats) = &self.stats {
+    async fn get_statistics(&self) -> Option<String> {
+        // RocksDB stats.
+        let rocksdb_stats = if let Some(stats) = &self.stats {
             stats.to_string()
         } else {
             None
+        };
+        let rocksdb_stats = rocksdb_stats.unwrap_or_default();
+
+        // Wal stats.
+        let table_units = self.table_units.read().unwrap();
+        let mut wal_stats = Vec::with_capacity(table_units.len());
+        for table_unit in table_units.values() {
+            wal_stats.push(format!("{:?}", table_unit.as_ref()));
         }
+        let wal_stats = wal_stats.join("\n");
+
+        let stats = format!("#RocksDB stats:\n{rocksdb_stats}\n#RocksDBWal stats:\n{wal_stats}\n");
+
+        Some(stats)
     }
 }
 

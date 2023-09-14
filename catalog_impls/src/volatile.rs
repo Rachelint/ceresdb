@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! A volatile catalog implementation used for storing information about table
 //! and schema in memory.
@@ -282,9 +294,9 @@ impl Schema for SchemaImpl {
     ) -> schema::Result<TableRef> {
         // FIXME: Error should be returned if create_if_not_exist is false.
         if let Some(table) = self.get_table(
-            &request.catalog_name,
-            &request.schema_name,
-            &request.table_name,
+            &request.params.catalog_name,
+            &request.params.schema_name,
+            &request.params.table_name,
         )? {
             return Ok(table);
         }
@@ -293,16 +305,16 @@ impl Schema for SchemaImpl {
         let _create_table_guard = self.create_table_mutex.lock().await;
 
         if let Some(table) = self.get_table(
-            &request.catalog_name,
-            &request.schema_name,
-            &request.table_name,
+            &request.params.catalog_name,
+            &request.params.schema_name,
+            &request.params.table_name,
         )? {
             return Ok(table);
         }
 
         // Do real create table.
         // Partition table is not stored in ShardTableManager.
-        if request.partition_info.is_none() {
+        if request.params.partition_info.is_none() {
             let shard =
                 self.shard_set
                     .get(request.shard_id)
@@ -313,7 +325,7 @@ impl Schema for SchemaImpl {
 
             // TODO: seems unnecessary?
             let _ = shard
-                .find_table(&request.schema_name, &request.table_name)
+                .find_table(&request.params.schema_name, &request.params.table_name)
                 .with_context(|| schema::CreateTable {
                     request: request.clone(),
                     msg: "table not found in shard".to_string(),

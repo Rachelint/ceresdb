@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::{collections::HashMap, convert::TryInto, sync::Arc};
 
@@ -10,7 +22,6 @@ use arrow::{
 use datafusion::logical_expr::Expr;
 use datafusion_proto::bytes::Serializeable;
 use log::error;
-use query_engine::executor::RecordBatchVec;
 use query_frontend::{ast::ShowCreateObject, plan::ShowCreatePlan};
 use snafu::ensure;
 use table_engine::{partition::PartitionInfo, table::TableRef};
@@ -18,6 +29,7 @@ use table_engine::{partition::PartitionInfo, table::TableRef};
 use crate::{
     interpreter::Output,
     show::{Result, UnsupportedType},
+    RecordBatchVec,
 };
 
 pub struct ShowCreateInterpreter {
@@ -112,9 +124,8 @@ impl ShowCreateInterpreter {
     }
 
     fn render_partition_info(partition_info: Option<PartitionInfo>) -> String {
-        let mut res = String::new();
         if partition_info.is_none() {
-            return res;
+            return String::new();
         }
 
         let partition_info = partition_info.unwrap();
@@ -124,47 +135,40 @@ impl ShowCreateInterpreter {
                     Ok(expr) => expr,
                     Err(e) => {
                         error!("show create table parse partition info failed, err:{}", e);
-                        return res;
+                        return String::new();
                     }
                 };
 
                 if v.linear {
-                    res += format!(
-                        " PARTITION BY LINEAR HASH({}) PARTITIONS {}",
-                        expr,
+                    format!(
+                        " PARTITION BY LINEAR HASH({expr}) PARTITIONS {}",
                         v.definitions.len()
                     )
-                    .as_str()
                 } else {
-                    res += format!(
-                        " PARTITION BY HASH({}) PARTITIONS {}",
-                        expr,
+                    format!(
+                        " PARTITION BY HASH({expr}) PARTITIONS {}",
                         v.definitions.len()
                     )
-                    .as_str()
                 }
             }
             PartitionInfo::Key(v) => {
                 let rendered_partition_key = v.partition_key.join(",");
                 if v.linear {
-                    res += format!(
-                        " PARTITION BY LINEAR KEY({}) PARTITIONS {}",
-                        rendered_partition_key,
+                    format!(
+                        " PARTITION BY LINEAR KEY({rendered_partition_key}) PARTITIONS {}",
                         v.definitions.len()
                     )
-                    .as_str()
                 } else {
-                    res += format!(
-                        " PARTITION BY KEY({}) PARTITIONS {}",
-                        rendered_partition_key,
+                    format!(
+                        " PARTITION BY KEY({rendered_partition_key}) PARTITIONS {}",
                         v.definitions.len()
                     )
-                    .as_str()
                 }
             }
+            PartitionInfo::Random(v) => {
+                format!(" PARTITIONS {}", v.definitions.len())
+            }
         }
-
-        res
     }
 
     fn render_options(opts: HashMap<String, String>) -> String {

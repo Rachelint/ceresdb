@@ -1,11 +1,23 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Write logic of instance
 
+use bytes_ext::ByteVec;
 use ceresdbproto::{schema as schema_pb, table_requests};
 use codec::row;
 use common_types::{
-    bytes::ByteVec,
     row::{RowGroup, RowGroupSlicer},
     schema::{IndexInWriterSchema, Schema},
 };
@@ -26,7 +38,7 @@ use crate::{
     },
     memtable::{key::KeySequence, PutContext},
     payload::WritePayload,
-    space::{SpaceAndTable, SpaceRef},
+    space::SpaceRef,
     table::{data::TableDataRef, version::MemTableForWrite},
 };
 
@@ -249,15 +261,17 @@ pub struct Writer<'a> {
 impl<'a> Writer<'a> {
     pub fn new(
         instance: InstanceRef,
-        space_table: SpaceAndTable,
+        space: SpaceRef,
+        table_data: TableDataRef,
         serial_exec: &'a mut TableOpSerialExecutor,
     ) -> Writer<'a> {
-        assert_eq!(space_table.table_data().id, serial_exec.table_id());
+        // Ensure the writer has permission to handle the write of the table.
+        assert_eq!(table_data.id, serial_exec.table_id());
 
         Self {
             instance,
-            space: space_table.space().clone(),
-            table_data: space_table.table_data().clone(),
+            space,
+            table_data,
             serial_exec,
         }
     }
@@ -454,9 +468,10 @@ impl<'a> Writer<'a> {
         table_data.set_last_sequence(sequence);
 
         // Collect metrics.
+        let num_columns = row_group.schema().num_columns();
         table_data
             .metrics
-            .on_write_request_done(row_group.num_rows());
+            .on_write_request_done(row_group.num_rows(), num_columns);
 
         Ok(())
     }
@@ -552,6 +567,7 @@ impl<'a> Writer<'a> {
             // mismatch during replaying
             schema: Some(schema_pb::TableSchema::from(&self.table_data.schema())),
             rows: encoded_rows,
+            cols: Vec::new(),
         };
 
         // Encode payload

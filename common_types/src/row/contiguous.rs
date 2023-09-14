@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Contiguous row.
 
@@ -13,10 +25,12 @@ use prost::encoding::{decode_varint, encode_varint, encoded_len_varint};
 use snafu::{ensure, Backtrace, Snafu};
 
 use crate::{
-    bitset::{BitSet, RoBitSet},
     datum::{Datum, DatumKind, DatumView},
     projected_schema::RowProjector,
-    row::Row,
+    row::{
+        bitset::{BitSet, RoBitSet},
+        Row,
+    },
     schema::{IndexInWriterSchema, Schema},
     time::Timestamp,
 };
@@ -451,6 +465,8 @@ impl<'a, T: RowBuffer + 'a> ContiguousRowWriter<'a, T> {
                     num_bytes_of_variable_col += size;
                     encoded_len += size;
                 }
+            } else {
+                // No need to store null column.
             }
         }
 
@@ -477,8 +493,11 @@ impl<'a, T: RowBuffer + 'a> ContiguousRowWriter<'a, T> {
                 )?;
 
                 if datum.is_null() {
-                    nulls_bit_set.unset(writer_index);
+                    nulls_bit_set.unset(index_in_table);
                 }
+            } else {
+                // This column should be treated as null.
+                nulls_bit_set.unset(index_in_table);
             }
         }
 
@@ -509,6 +528,8 @@ impl<'a, T: RowBuffer + 'a> ContiguousRowWriter<'a, T> {
                     let len = datum.size();
                     encoded_len += encoded_len_varint(len as u64) + len;
                 }
+            } else {
+                unreachable!("The column is ensured to be non-null");
             }
         }
 
@@ -530,8 +551,7 @@ impl<'a, T: RowBuffer + 'a> ContiguousRowWriter<'a, T> {
                     &mut next_string_offset,
                 )?;
             } else {
-                datum_offset +=
-                    byte_size_of_datum(&self.table_schema.column(index_in_table).data_type);
+                unreachable!("The column is ensured to be non-null");
             }
         }
 
@@ -727,6 +747,49 @@ mod tests {
                 let view = reader.datum_view_at(i, datum_kinds[i]);
 
                 assert_eq!(datum.as_view(), view);
+            }
+        }
+    }
+
+    #[test]
+    fn test_contiguous_read_write_with_different_write_schema() {
+        let schema = build_schema();
+        let rows = build_rows();
+        let index_in_writer = {
+            let mut index_schema = IndexInWriterSchema::default();
+            index_schema.reserve_columns(schema.num_columns());
+            // Make the final column is None.
+            for i in 0..schema.num_columns() {
+                let col_idx = (i != schema.num_columns() - 1).then_some(i);
+                index_schema.push_column(col_idx);
+            }
+            index_schema
+        };
+
+        let datum_kinds = schema
+            .columns()
+            .iter()
+            .map(|column| &column.data_type)
+            .collect::<Vec<_>>();
+
+        let mut buf = Vec::new();
+        for row in rows {
+            let mut writer = ContiguousRowWriter::new(&mut buf, &schema, &index_in_writer);
+
+            writer.write_row(&row).unwrap();
+
+            let reader = ContiguousRowReader::try_new(&buf, &schema).unwrap();
+
+            let final_col_idx = reader.num_datum_views() - 1;
+            let range: Vec<_> = (0..=final_col_idx).collect();
+            for i in range {
+                let datum = &row[i];
+                let view = reader.datum_view_at(i, datum_kinds[i]);
+                if i == final_col_idx {
+                    assert!(matches!(view, DatumView::Null));
+                } else {
+                    assert_eq!(datum.as_view(), view);
+                }
             }
         }
     }

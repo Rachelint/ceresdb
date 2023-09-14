@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Sst reader implementation based on parquet.
 
@@ -12,12 +24,17 @@ use std::{
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch as ArrowRecordBatch};
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes_ext::Bytes;
 use common_types::{
     projected_schema::{ProjectedSchema, RowProjector},
     record_batch::{ArrowRecordBatchProjector, RecordBatchWithKey},
 };
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::{
+    common::ToDFSchema,
+    datasource::physical_plan::{parquet::page_filter::PagePruningPredicate, ParquetFileMetrics},
+    physical_expr::{create_physical_expr, execution_props::ExecutionProps},
+    physical_plan::metrics::ExecutionPlanMetricsSet,
+};
 use futures::{Stream, StreamExt};
 use generic_error::{BoxError, GenericResult};
 use log::{debug, error};
@@ -275,20 +292,12 @@ impl<'a> Reader<'a> {
             ArrowRecordBatchProjector::from(row_projector)
         };
 
-        let sst_meta_data = self
-            .meta_data
-            .as_ref()
-            // metadata must be inited after `init_if_necessary`.
-            .unwrap()
-            .custom();
-
         let streams: Vec<_> = streams
             .into_iter()
             .map(|stream| {
                 Box::new(RecordBatchProjector::new(
                     stream,
                     row_projector.clone(),
-                    sst_meta_data.clone(),
                     self.metrics.metrics_collector.clone(),
                 )) as _
             })
@@ -325,6 +334,38 @@ impl<'a> Reader<'a> {
         suggested.min(num_row_groups).max(1)
     }
 
+    fn build_row_selection(
+        &self,
+        arrow_schema: SchemaRef,
+        row_groups: &[usize],
+        file_metadata: &parquet_ext::ParquetMetaData,
+    ) -> Result<Option<RowSelection>> {
+        // TODO: remove fixed partition
+        let partition = 0;
+        let exprs = datafusion::optimizer::utils::conjunction(self.predicate.exprs().to_vec());
+        let exprs = match exprs {
+            Some(exprs) => exprs,
+            None => return Ok(None),
+        };
+
+        let df_schema = arrow_schema
+            .clone()
+            .to_dfschema()
+            .context(DataFusionError)?;
+        let physical_expr =
+            create_physical_expr(&exprs, &df_schema, &arrow_schema, &ExecutionProps::new())
+                .context(DataFusionError)?;
+        let page_predicate = PagePruningPredicate::try_new(&physical_expr, arrow_schema.clone())
+            .context(DataFusionError)?;
+
+        let metrics = ParquetFileMetrics::new(partition, self.path.as_ref(), &self.df_plan_metrics);
+        page_predicate
+            .prune(row_groups, file_metadata, &metrics)
+            .context(DataFusionError)
+    }
+
+    // TODO: remove it and use the suggested api.
+    #[allow(deprecated)]
     async fn fetch_record_batch_streams(
         &mut self,
         suggested_parallelism: usize,
@@ -473,19 +514,10 @@ impl<'a> Reader<'a> {
                     file_path: self.path.to_string(),
                 })?;
 
-        let object_store_reader = parquet_ext::reader::ObjectStoreReader::new(
-            self.store.clone(),
-            self.path.clone(),
-            Arc::new(parquet_meta_data),
-        );
+        // TODO: Support page index until https://github.com/CeresDB/ceresdb/issues/1040 is fixed.
 
-        let parquet_meta_data = parquet_ext::meta_data::meta_with_page_indexes(object_store_reader)
+        MetaData::try_new(&parquet_meta_data, ignore_sst_filter, self.store.clone())
             .await
-            .with_context(|| DecodePageIndexes {
-                file_path: self.path.to_string(),
-            })?;
-
-        MetaData::try_new(&parquet_meta_data, ignore_sst_filter)
             .box_err()
             .context(DecodeSstMeta)
     }
@@ -581,14 +613,12 @@ struct RecordBatchProjector {
 
     metrics: ProjectorMetrics,
     start_time: Instant,
-    sst_meta: ParquetMetaDataRef,
 }
 
 impl RecordBatchProjector {
     fn new(
         stream: SendableRecordBatchStream,
         row_projector: ArrowRecordBatchProjector,
-        sst_meta: ParquetMetaDataRef,
         metrics_collector: Option<MetricsCollector>,
     ) -> Self {
         let metrics = ProjectorMetrics {
@@ -601,7 +631,6 @@ impl RecordBatchProjector {
             row_projector,
             metrics,
             start_time: Instant::now(),
-            sst_meta,
         }
     }
 }
@@ -617,8 +646,7 @@ impl Stream for RecordBatchProjector {
                 match record_batch.box_err().context(DecodeRecordBatch {}) {
                     Err(e) => Poll::Ready(Some(Err(e))),
                     Ok(record_batch) => {
-                        let parquet_decoder =
-                            ParquetDecoder::new(&projector.sst_meta.collapsible_cols_idx);
+                        let parquet_decoder = ParquetDecoder::new();
                         let record_batch = parquet_decoder
                             .decode_record_batch(record_batch)
                             .box_err()
@@ -899,8 +927,7 @@ mod tests {
 
     impl MockRandomSenders {
         fn start_to_send(&mut self) {
-            while !self.tx_group.is_empty() {
-                let tx = self.tx_group.pop().unwrap();
+            while let Some(tx) = self.tx_group.pop() {
                 let test_data = self.test_datas.pop().unwrap();
                 tokio::spawn(async move {
                     for datum in test_data {

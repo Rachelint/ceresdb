@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! WalManager abstraction
 
@@ -15,7 +27,10 @@ use generic_error::BoxError;
 use runtime::Runtime;
 use snafu::ResultExt;
 
-use crate::log_batch::{LogEntry, LogWriteBatch, PayloadDecoder};
+use crate::{
+    log_batch::{LogEntry, LogWriteBatch, PayloadDecoder},
+    metrics::WAL_WRITE_BYTES_HISTOGRAM,
+};
 
 pub mod error {
     use generic_error::GenericError;
@@ -318,9 +333,13 @@ pub trait WalManager: Send + Sync + fmt::Debug + 'static {
     async fn scan(&self, ctx: &ScanContext, req: &ScanRequest) -> Result<BatchLogIteratorAdapter>;
 
     /// Get statistics
-    fn get_statistics(&self) -> Option<String> {
-        None
-    }
+    async fn get_statistics(&self) -> Option<String>;
+}
+
+/// Used to collect the metrics about the write logs.
+pub(crate) fn collect_write_log_metrics(batch: &LogWriteBatch) {
+    let total_bytes: usize = batch.entries.iter().map(|v| v.payload.len()).sum();
+    WAL_WRITE_BYTES_HISTOGRAM.observe(total_bytes as f64);
 }
 
 #[derive(Debug)]

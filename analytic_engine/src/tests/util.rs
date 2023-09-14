@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Test utils.
 
@@ -21,8 +33,8 @@ use table_engine::{
         Result as EngineResult, TableDef, TableEngineRef,
     },
     table::{
-        AlterSchemaRequest, FlushRequest, GetRequest, ReadOrder, ReadRequest, Result, SchemaId,
-        TableId, TableRef, WriteRequest,
+        AlterSchemaRequest, FlushRequest, GetRequest, ReadRequest, Result, SchemaId, TableId,
+        TableRef, WriteRequest,
     },
 };
 use tempfile::TempDir;
@@ -45,28 +57,6 @@ impl From<Null> for Datum {
     }
 }
 
-pub async fn check_read_with_order<T: WalsOpener>(
-    test_ctx: &TestContext<T>,
-    fixed_schema_table: &FixedSchemaTable,
-    msg: &str,
-    table_name: &str,
-    rows: &[RowTuple<'_>],
-    read_order: ReadOrder,
-) {
-    for read_opts in table::read_opts_list() {
-        info!("{}, opts:{:?}", msg, read_opts);
-
-        let record_batches = test_ctx
-            .read_table(
-                table_name,
-                fixed_schema_table.new_read_all_request(read_opts, read_order),
-            )
-            .await;
-
-        fixed_schema_table.assert_batch_eq_to_rows(&record_batches, rows);
-    }
-}
-
 pub async fn check_read<T: WalsOpener>(
     test_ctx: &TestContext<T>,
     fixed_schema_table: &FixedSchemaTable,
@@ -74,15 +64,18 @@ pub async fn check_read<T: WalsOpener>(
     table_name: &str,
     rows: &[RowTuple<'_>],
 ) {
-    check_read_with_order(
-        test_ctx,
-        fixed_schema_table,
-        msg,
-        table_name,
-        rows,
-        ReadOrder::None,
-    )
-    .await
+    for read_opts in table::read_opts_list() {
+        info!("{}, opts:{:?}", msg, read_opts);
+
+        let record_batches = test_ctx
+            .read_table(
+                table_name,
+                fixed_schema_table.new_read_all_request(read_opts),
+            )
+            .await;
+
+        fixed_schema_table.assert_batch_eq_to_rows(&record_batches, rows);
+    }
 }
 
 pub async fn check_get<T: WalsOpener>(
@@ -318,7 +311,7 @@ impl<T: WalsOpener> TestContext<T> {
     }
 
     async fn create_table(&mut self, create_request: CreateTableRequest) {
-        let table_name = create_request.table_name.clone();
+        let table_name = create_request.params.table_name.clone();
         let table = self.engine().create_table(create_request).await.unwrap();
 
         self.name_to_tables.insert(table_name.to_string(), table);
@@ -624,7 +617,7 @@ impl EngineBuildContext for RocksDBEngineBuildContext {
     type WalsOpener = RocksDBWalsOpener;
 
     fn wals_opener(&self) -> Self::WalsOpener {
-        RocksDBWalsOpener::default()
+        RocksDBWalsOpener
     }
 
     fn config(&self) -> Config {

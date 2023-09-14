@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Table engine logic of instance
 
@@ -112,19 +124,8 @@ pub enum Error {
         source: GenericError,
     },
 
-    #[snafu(display(
-        "Invalid options, space_id:{}, table:{}, table_id:{}, err:{}",
-        space_id,
-        table,
-        table_id,
-        source
-    ))]
-    InvalidOptions {
-        space_id: SpaceId,
-        table: String,
-        table_id: TableId,
-        source: GenericError,
-    },
+    #[snafu(display("Invalid options, table:{table}, err:{source}",))]
+    InvalidOptions { table: String, source: GenericError },
 
     #[snafu(display(
         "Failed to create table data, space_id:{}, table:{}, table_id:{}, err:{}",
@@ -231,6 +232,11 @@ pub enum Error {
         msg: Option<String>,
         backtrace: Backtrace,
     },
+
+    #[snafu(display(
+        "Try to create a random partition table in overwrite mode, table:{table}.\nBacktrace:\n{backtrace}",
+    ))]
+    TryCreateRandomPartitionTableInOverwriteMode { table: String, backtrace: Backtrace },
 }
 
 define_result!(Error);
@@ -238,7 +244,9 @@ define_result!(Error);
 impl From<Error> for table_engine::engine::Error {
     fn from(err: Error) -> Self {
         match &err {
-            Error::InvalidOptions { table, .. } | Error::SpaceNotExist { table, .. } => {
+            Error::InvalidOptions { table, .. }
+            | Error::SpaceNotExist { table, .. }
+            | Error::TryCreateRandomPartitionTableInOverwriteMode { table, .. } => {
                 Self::InvalidArguments {
                     table: table.clone(),
                     source: Box::new(err),
@@ -318,8 +326,8 @@ impl Instance {
         request: CreateTableRequest,
     ) -> Result<SpaceAndTable> {
         let context = SpaceContext {
-            catalog_name: request.catalog_name.clone(),
-            schema_name: request.schema_name.clone(),
+            catalog_name: request.params.catalog_name.clone(),
+            schema_name: request.params.schema_name.clone(),
         };
         let space = self.find_or_create_space(space_id, context).await?;
         let table_data = self.do_create_table(space.clone(), request).await?;
@@ -394,12 +402,6 @@ impl Instance {
     ) -> Result<OpenTablesOfShardResult> {
         let shard_id = request.shard_id;
         let mut table_ctxs = Vec::with_capacity(request.table_defs.len());
-
-        // Open tables.
-        struct TableInfo {
-            name: String,
-            id: TableId,
-        }
 
         let mut spaces_of_tables = Vec::with_capacity(request.table_defs.len());
         for table_def in request.table_defs {

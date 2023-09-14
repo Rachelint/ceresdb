@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Mem compact format codec
 
@@ -9,7 +21,7 @@ mod datum;
 mod float;
 mod number;
 
-use common_types::bytes::SafeBuf;
+use bytes_ext::SafeBuf;
 use macros::define_result;
 use snafu::{ensure, Backtrace, ResultExt, Snafu};
 
@@ -18,10 +30,10 @@ use crate::consts;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Failed to encode flag, err:{}", source))]
-    EncodeKey { source: common_types::bytes::Error },
+    EncodeKey { source: bytes_ext::Error },
 
     #[snafu(display("Failed to encode value, err:{}", source))]
-    EncodeValue { source: common_types::bytes::Error },
+    EncodeValue { source: bytes_ext::Error },
 
     #[snafu(display("Failed to encode varint, err:{}", source))]
     EncodeVarint { source: crate::varint::Error },
@@ -30,7 +42,7 @@ pub enum Error {
     DecodeVarint { source: crate::varint::Error },
 
     #[snafu(display("Failed to decode key, err:{}", source))]
-    DecodeKey { source: common_types::bytes::Error },
+    DecodeKey { source: bytes_ext::Error },
 
     #[snafu(display("Insufficient bytes to decode value.\nBacktrace:\n{}", backtrace))]
     DecodeEmptyValue { backtrace: Backtrace },
@@ -48,10 +60,10 @@ pub enum Error {
     },
 
     #[snafu(display("Insufficient bytes to decode value, err:{}", source))]
-    DecodeValue { source: common_types::bytes::Error },
+    DecodeValue { source: bytes_ext::Error },
 
     #[snafu(display("Failed to skip decoded value, err:{}", source))]
-    SkipDecodedValue { source: common_types::bytes::Error },
+    SkipDecodedValue { source: bytes_ext::Error },
 
     #[snafu(display("Try into usize error:{}.\nBacktrace:\n{}", source, backtrace))]
     TryIntoUsize {

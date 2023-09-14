@@ -1,4 +1,16 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -14,14 +26,12 @@ use ceresdbproto::{
 use common_types::{
     datum::DatumKind,
     record_batch::RecordBatch,
-    request_id::RequestId,
     schema::{RecordSchema, TSID_COLUMN},
 };
 use generic_error::BoxError;
 use http::StatusCode;
-use interpreters::interpreter::Output;
+use interpreters::{interpreter::Output, RecordBatchVec};
 use log::info;
-use query_engine::executor::{Executor as QueryExecutor, RecordBatchVec};
 use query_frontend::{
     frontend::{Context as SqlContext, Error as FrontendError, Frontend},
     promql::ColumnNames,
@@ -35,8 +45,9 @@ use crate::{
     Context, Proxy,
 };
 
-impl<Q: QueryExecutor + 'static> Proxy<Q> {
+impl Proxy {
     /// Implement prometheus query in grpc service.
+    /// Note: not used in prod now.
     pub async fn handle_prom_query(
         &self,
         ctx: Context,
@@ -60,7 +71,7 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
         ctx: Context,
         req: PrometheusQueryRequest,
     ) -> Result<PrometheusQueryResponse> {
-        let request_id = RequestId::next_id();
+        let request_id = ctx.request_id;
         let begin_instant = Instant::now();
         let deadline = ctx.timeout.map(|t| begin_instant + t);
         let req_ctx = req.context.context(ErrNoCause {
@@ -91,21 +102,18 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
                 msg: "Invalid request",
             })?;
 
-        let (plan, column_name) =
-            frontend
-                .promql_expr_to_plan(&mut sql_ctx, expr)
-                .map_err(|e| {
-                    let code = if is_table_not_found_error(&e) {
-                        StatusCode::NOT_FOUND
-                    } else {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    };
-                    Error::ErrWithCause {
-                        code,
-                        msg: "Failed to create plan".to_string(),
-                        source: Box::new(e),
-                    }
-                })?;
+        let (plan, column_name) = frontend.promql_expr_to_plan(&sql_ctx, expr).map_err(|e| {
+            let code = if is_table_not_found_error(&e) {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Error::ErrWithCause {
+                code,
+                msg: "Failed to create plan".to_string(),
+                source: Box::new(e),
+            }
+        })?;
 
         self.instance
             .limiter
@@ -334,7 +342,7 @@ impl RecordConverter {
 mod tests {
 
     use common_types::{
-        column::{ColumnBlock, ColumnBlockBuilder},
+        column_block::{ColumnBlock, ColumnBlockBuilder},
         column_schema,
         datum::{Datum, DatumKind},
         row::Row,

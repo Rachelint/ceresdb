@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Http service
 
@@ -8,8 +20,8 @@ use std::{
 };
 
 use analytic_engine::setup::OpenedWals;
+use bytes_ext::Bytes;
 use cluster::ClusterRef;
-use common_types::bytes::Bytes;
 use generic_error::{BoxError, GenericError};
 use log::{error, info};
 use logger::RuntimeLevel;
@@ -25,9 +37,8 @@ use proxy::{
     opentsdb::types::{PutParams, PutRequest},
     Proxy,
 };
-use query_engine::executor::Executor as QueryExecutor;
 use router::endpoint::Endpoint;
-use runtime::Runtime;
+use runtime::{Runtime, RuntimeRef};
 use serde::Serialize;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use table_engine::{engine::EngineRuntimes, table::FlushRequest};
@@ -37,7 +48,7 @@ use warp::{
     http::StatusCode,
     reject,
     reply::{self, Reply},
-    Filter,
+    Filter, Rejection,
 };
 
 use crate::{
@@ -131,10 +142,10 @@ impl reject::Reject for Error {}
 ///
 /// Endpoints beginning with /debug are for internal use, and may subject to
 /// breaking changes.
-pub struct Service<Q> {
+pub struct Service {
     // In cluster mode, cluster is valid, while in stand-alone mode, cluster is None
     cluster: Option<ClusterRef>,
-    proxy: Arc<Proxy<Q>>,
+    proxy: Arc<Proxy>,
     engine_runtimes: Arc<EngineRuntimes>,
     log_runtime: Arc<RuntimeLevel>,
     profiler: Arc<Profiler>,
@@ -145,7 +156,7 @@ pub struct Service<Q> {
     opened_wals: OpenedWals,
 }
 
-impl<Q: QueryExecutor + 'static> Service<Q> {
+impl Service {
     pub async fn start(&mut self) -> Result<()> {
         let ip_addr: IpAddr = self
             .config
@@ -183,7 +194,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
     }
 }
 
-impl<Q: QueryExecutor + 'static> Service<Q> {
+impl Service {
     fn routes(
         &self,
     ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
@@ -204,7 +215,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .or(self.profile_heap())
             .or(self.server_config())
             .or(self.shards())
-            .or(self.stats())
+            .or(self.wal_stats())
             .with(warp::log("http_requests"))
             .with(warp::log::custom(|info| {
                 let path = info.path();
@@ -265,24 +276,33 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .and(extract_request)
             .and(self.with_context())
             .and(self.with_proxy())
-            .and_then(|req, ctx, proxy: Arc<Proxy<Q>>| async move {
-                let result = proxy
-                    .handle_http_sql_query(&ctx, req)
-                    .await
-                    .map(convert_output);
-
-                match result {
-                    Ok(res) => Ok(reply::json(&res)),
-                    Err(e) => {
-                        if let proxy::error::Error::QueryMaybeExceedTTL { msg } = e {
-                            return Err(reject::custom(Error::QueryMaybeExceedTTL { msg }));
+            .and(self.with_read_runtime())
+            .and_then(
+                |req, ctx, proxy: Arc<Proxy>, runtime: RuntimeRef| async move {
+                    let result = runtime
+                        .spawn(async move {
+                            proxy
+                                .handle_http_sql_query(&ctx, req)
+                                .await
+                                .map(convert_output)
+                        })
+                        .await
+                        .box_err()
+                        .context(HandleRequest);
+                    match result {
+                        Ok(Ok(res)) => Ok(reply::json(&res)),
+                        Ok(Err(e)) => {
+                            if let proxy::error::Error::QueryMaybeExceedTTL { msg } = e {
+                                return Err(reject::custom(Error::QueryMaybeExceedTTL { msg }));
+                            }
+                            Err(reject::custom(Error::Internal {
+                                source: Box::new(e),
+                            }))
                         }
-                        Err(reject::custom(Error::Internal {
-                            source: Box::new(e),
-                        }))
+                        Err(e) => Err(reject::custom(e)),
                     }
-                }
-            })
+                },
+            )
     }
 
     // GET /route
@@ -291,7 +311,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .and(warp::get())
             .and(self.with_context())
             .and(self.with_proxy())
-            .and_then(|table: String, ctx, proxy: Arc<Proxy<Q>>| async move {
+            .and_then(|table: String, ctx, proxy: Arc<Proxy>| async move {
                 let result = proxy
                     .handle_http_route(&ctx, table)
                     .await
@@ -324,7 +344,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .and(warp::query::<WriteParams>())
             .and(warp::body::bytes())
             .and(self.with_proxy())
-            .and_then(|ctx, params, lines, proxy: Arc<Proxy<Q>>| async move {
+            .and_then(|ctx, params, lines, proxy: Arc<Proxy>| async move {
                 let request = WriteRequest::new(lines, params);
                 let result = proxy.handle_influxdb_write(ctx, request).await;
                 match result {
@@ -342,21 +362,19 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .and(warp::query::<InfluxqlParams>())
             .and(warp::body::form::<HashMap<String, String>>())
             .and(self.with_proxy())
-            .and_then(
-                |method, ctx, params, body, proxy: Arc<Proxy<Q>>| async move {
-                    let request =
-                        InfluxqlRequest::try_new(method, body, params).map_err(reject::custom)?;
-                    let result = proxy
-                        .handle_influxdb_query(ctx, request)
-                        .await
-                        .box_err()
-                        .context(HandleRequest);
-                    match result {
-                        Ok(res) => Ok(reply::json(&res)),
-                        Err(e) => Err(reject::custom(e)),
-                    }
-                },
-            );
+            .and_then(|method, ctx, params, body, proxy: Arc<Proxy>| async move {
+                let request =
+                    InfluxqlRequest::try_new(method, body, params).map_err(reject::custom)?;
+                let result = proxy
+                    .handle_influxdb_query(ctx, request)
+                    .await
+                    .box_err()
+                    .context(HandleRequest);
+                match result {
+                    Ok(res) => Ok(reply::json(&res)),
+                    Err(e) => Err(reject::custom(e)),
+                }
+            });
 
         warp::path!("influxdb" / "v1" / ..).and(write_api.or(query_api))
     }
@@ -374,7 +392,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
             .and(warp::query::<PutParams>())
             .and(warp::body::bytes())
             .and(self.with_proxy())
-            .and_then(|ctx, params, points, proxy: Arc<Proxy<Q>>| async move {
+            .and_then(|ctx, params, points, proxy: Arc<Proxy>| async move {
                 let request = PutRequest::new(points, params);
                 let result = proxy.handle_opentsdb_put(ctx, request).await;
                 match result {
@@ -393,7 +411,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
         warp::path!("debug" / "flush_memtable")
             .and(warp::post())
             .and(self.with_instance())
-            .and_then(|instance: InstanceRef<Q>| async move {
+            .and_then(|instance: InstanceRef| async move {
                 let get_all_tables = || {
                     let mut tables = Vec::new();
                     for catalog in instance
@@ -516,24 +534,32 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
     }
 
     // GET /debug/stats
-    fn stats(&self) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
-        let opened_wals = self.opened_wals.clone();
-        warp::path!("debug" / "stats")
+    fn wal_stats(
+        &self,
+    ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+        warp::path!("debug" / "wal_stats")
             .and(warp::get())
-            .map(move || {
-                [
-                    "Data wal stats:",
-                    &opened_wals
-                        .data_wal
-                        .get_statistics()
-                        .unwrap_or_else(|| "Unknown".to_string()),
-                    "Manifest wal stats:",
-                    &opened_wals
-                        .manifest_wal
-                        .get_statistics()
-                        .unwrap_or_else(|| "Unknown".to_string()),
-                ]
-                .join("\n")
+            .and(self.with_opened_wals())
+            .and_then(|wals: OpenedWals| async move {
+                let wal_stats = wals
+                    .data_wal
+                    .get_statistics()
+                    .await
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                let manifest_wal_stats = wals
+                    .manifest_wal
+                    .get_statistics()
+                    .await
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                let stats = format!(
+                    "[Data wal stats]:\n{wal_stats}
+                \n\n------------------------------------------------------\n\n
+                [Manifest wal stats]:\n{manifest_wal_stats}"
+                );
+
+                std::result::Result::<_, Rejection>::Ok(stats.into_response())
             })
     }
 
@@ -609,7 +635,6 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
                             .catalog(catalog.unwrap_or(default_catalog))
                             .schema(schema)
                             .timeout(timeout)
-                            .enable_partition_table_access(true)
                             .build()
                             .context(CreateContext)
                             .map_err(reject::custom)
@@ -623,7 +648,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
         warp::any().map(move || profiler.clone())
     }
 
-    fn with_proxy(&self) -> impl Filter<Extract = (Arc<Proxy<Q>>,), Error = Infallible> + Clone {
+    fn with_proxy(&self) -> impl Filter<Extract = (Arc<Proxy>,), Error = Infallible> + Clone {
         let proxy = self.proxy.clone();
         warp::any().map(move || proxy.clone())
     }
@@ -640,9 +665,7 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
         warp::any().map(move || runtime.clone())
     }
 
-    fn with_instance(
-        &self,
-    ) -> impl Filter<Extract = (InstanceRef<Q>,), Error = Infallible> + Clone {
+    fn with_instance(&self) -> impl Filter<Extract = (InstanceRef,), Error = Infallible> + Clone {
         let instance = self.proxy.instance();
         warp::any().map(move || instance.clone())
     }
@@ -653,20 +676,32 @@ impl<Q: QueryExecutor + 'static> Service<Q> {
         let log_runtime = self.log_runtime.clone();
         warp::any().map(move || log_runtime.clone())
     }
+
+    fn with_opened_wals(&self) -> impl Filter<Extract = (OpenedWals,), Error = Infallible> + Clone {
+        let wals = self.opened_wals.clone();
+        warp::any().map(move || wals.clone())
+    }
+
+    fn with_read_runtime(
+        &self,
+    ) -> impl Filter<Extract = (Arc<Runtime>,), Error = Infallible> + Clone {
+        let runtime = self.engine_runtimes.read_runtime.clone();
+        warp::any().map(move || runtime.clone())
+    }
 }
 
 /// Service builder
-pub struct Builder<Q> {
+pub struct Builder {
     config: HttpConfig,
     engine_runtimes: Option<Arc<EngineRuntimes>>,
     log_runtime: Option<Arc<RuntimeLevel>>,
     config_content: Option<String>,
     cluster: Option<ClusterRef>,
-    proxy: Option<Arc<Proxy<Q>>>,
+    proxy: Option<Arc<Proxy>>,
     opened_wals: Option<OpenedWals>,
 }
 
-impl<Q> Builder<Q> {
+impl Builder {
     pub fn new(config: HttpConfig) -> Self {
         Self {
             config,
@@ -699,7 +734,7 @@ impl<Q> Builder<Q> {
         self
     }
 
-    pub fn proxy(mut self, proxy: Arc<Proxy<Q>>) -> Self {
+    pub fn proxy(mut self, proxy: Arc<Proxy>) -> Self {
         self.proxy = Some(proxy);
         self
     }
@@ -710,9 +745,9 @@ impl<Q> Builder<Q> {
     }
 }
 
-impl<Q: QueryExecutor + 'static> Builder<Q> {
+impl Builder {
     /// Build and start the service
-    pub fn build(self) -> Result<Service<Q>> {
+    pub fn build(self) -> Result<Service> {
         let engine_runtimes = self.engine_runtimes.context(MissingEngineRuntimes)?;
         let log_runtime = self.log_runtime.context(MissingLogRuntime)?;
         let config_content = self.config_content.context(MissingInstance)?;

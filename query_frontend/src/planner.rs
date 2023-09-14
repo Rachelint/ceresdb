@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Planner converts a SQL AST into logical plans
 
@@ -1014,9 +1026,11 @@ impl<'a, P: MetaProvider> PlannerDelegate<'a, P> {
 
     pub(crate) fn find_table(&self, table_name: &str) -> Result<Option<TableRef>> {
         let table_ref = get_table_ref(table_name);
-        self.meta_provider
+        let resolved_table = self
+            .meta_provider
             .table(table_ref)
-            .context(MetaProviderFindTable)
+            .context(MetaProviderFindTable)?;
+        Ok(resolved_table.map(|resolved| resolved.table))
     }
 }
 
@@ -1356,7 +1370,14 @@ mod tests {
     use ceresdbproto::storage::{
         value, Field, FieldGroup, Tag, Value as PbValue, WriteSeriesEntry,
     };
+    use datafusion::{
+        common::tree_node::{TreeNode, TreeNodeVisitor, VisitRecursion},
+        datasource::source_as_provider,
+        logical_expr::LogicalPlan,
+    };
+    use partition_table_engine::scan_builder::PartitionedTableScanBuilder;
     use sqlparser::ast::Value;
+    use table_engine::provider::TableProviderAdapter;
 
     use super::*;
     use crate::{
@@ -1366,13 +1387,17 @@ mod tests {
     };
 
     fn quick_test(sql: &str, expected: &str) -> Result<()> {
+        let plan = sql_to_logical_plan(sql)?;
+        assert_eq!(format!("{plan:#?}"), expected);
+        Ok(())
+    }
+
+    fn sql_to_logical_plan(sql: &str) -> Result<Plan> {
         let mock = MockMetaProvider::default();
         let planner = build_planner(&mock);
         let mut statements = Parser::parse_sql(sql).unwrap();
         assert_eq!(statements.len(), 1);
-        let plan = planner.statement_to_plan(statements.remove(0))?;
-        assert_eq!(format!("{plan:#?}"), expected);
-        Ok(())
+        planner.statement_to_plan(statements.remove(0))
     }
 
     fn build_planner(provider: &MockMetaProvider) -> Planner<MockMetaProvider> {
@@ -1595,6 +1620,51 @@ mod tests {
 )",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_partitioned_table_query_statement_to_plan() {
+        // enable dedicated partitioned table provider in this test.
+        std::env::set_var("CERESDB_DEDICATED_PARTITIONED_TABLE_PROVIDER", "true");
+
+        let sql = "select * from test_partitioned_table;";
+        let plan = sql_to_logical_plan(sql).unwrap();
+        let df_plan = if let Plan::Query(query_plan) = plan {
+            query_plan.df_plan
+        } else {
+            panic!("It should be query plan");
+        };
+
+        // Check if it is successful to build a partitioned table source.
+        struct CheckVisitor;
+
+        impl TreeNodeVisitor for CheckVisitor {
+            type N = LogicalPlan;
+
+            fn pre_visit(
+                &mut self,
+                plan: &LogicalPlan,
+            ) -> datafusion::error::Result<VisitRecursion> {
+                if let LogicalPlan::TableScan(scan) = plan {
+                    let provider = source_as_provider(&scan.source).unwrap();
+                    if provider
+                        .as_any()
+                        .downcast_ref::<TableProviderAdapter<PartitionedTableScanBuilder>>()
+                        .is_none()
+                    {
+                        panic!("It should be partitioned table provider");
+                    }
+                }
+
+                Ok(VisitRecursion::Continue)
+            }
+        }
+
+        let mut visitor = CheckVisitor;
+        df_plan.visit(&mut visitor).unwrap();
+
+        // Rollback
+        std::env::set_var("CERESDB_DEDICATED_PARTITIONED_TABLE_PROVIDER", "false");
     }
 
     #[test]

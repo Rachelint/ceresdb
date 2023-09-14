@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! In-memory table engine implementations
 
@@ -12,7 +24,7 @@ use std::{
 
 use async_trait::async_trait;
 use common_types::{
-    column::{ColumnBlock, ColumnBlockBuilder},
+    column_block::{ColumnBlock, ColumnBlockBuilder},
     datum::{Datum, DatumKind},
     record_batch::RecordBatch,
     row::{Row, RowGroup},
@@ -24,8 +36,13 @@ use snafu::{OptionExt, ResultExt};
 
 use crate::{
     engine::{
-        CloseShardRequest, CloseTableRequest, CreateTableRequest, DropTableRequest,
-        OpenShardRequest, OpenShardResult, OpenTableRequest, TableEngine,
+        CloseShardRequest, CloseTableRequest, CreateTableParams, CreateTableRequest,
+        DropTableRequest, OpenShardRequest, OpenShardResult, OpenTableRequest, TableEngine,
+    },
+    remote::{
+        self,
+        model::{self, GetTableInfoRequest, WriteBatchResult},
+        RemoteEngine,
     },
     stream::{
         self, ErrNoSource, ErrWithSource, PartitionedStreams, RecordBatchStream,
@@ -104,6 +121,10 @@ impl Table for MemoryTable {
 
     fn stats(&self) -> TableStats {
         TableStats::default()
+    }
+
+    fn support_pushdown(&self, _read_schema: &Schema, _col_names: &[String]) -> bool {
+        false
     }
 
     async fn write(&self, request: WriteRequest) -> Result<usize> {
@@ -272,11 +293,18 @@ impl TableEngine for MemoryTableEngine {
         Ok(())
     }
 
+    async fn validate_create_table(
+        &self,
+        _request: &CreateTableParams,
+    ) -> crate::engine::Result<()> {
+        Ok(())
+    }
+
     async fn create_table(&self, request: CreateTableRequest) -> crate::engine::Result<TableRef> {
         Ok(Arc::new(MemoryTable::new(
-            request.table_name,
+            request.params.table_name,
             request.table_id,
-            request.table_schema,
+            request.params.table_schema,
             MEMORY_ENGINE_TYPE.to_string(),
         )))
     }
@@ -298,7 +326,7 @@ impl TableEngine for MemoryTableEngine {
 
     async fn open_shard(
         &self,
-        _equest: OpenShardRequest,
+        _request: OpenShardRequest,
     ) -> crate::engine::Result<OpenShardResult> {
         Ok(OpenShardResult::default())
     }
@@ -306,5 +334,37 @@ impl TableEngine for MemoryTableEngine {
     /// Close tables on same shard.
     async fn close_shard(&self, _request: CloseShardRequest) -> Vec<crate::engine::Result<String>> {
         vec![Ok("".to_string())]
+    }
+}
+
+/// Mock remote engine
+#[derive(Debug)]
+pub struct MockRemoteEngine;
+
+#[async_trait]
+impl RemoteEngine for MockRemoteEngine {
+    async fn read(
+        &self,
+        _request: remote::model::ReadRequest,
+    ) -> remote::Result<SendableRecordBatchStream> {
+        todo!()
+    }
+
+    async fn write(&self, _request: remote::model::WriteRequest) -> remote::Result<usize> {
+        todo!()
+    }
+
+    async fn write_batch(
+        &self,
+        _requests: Vec<remote::model::WriteRequest>,
+    ) -> remote::Result<Vec<WriteBatchResult>> {
+        todo!()
+    }
+
+    async fn get_table_info(
+        &self,
+        _request: GetTableInfoRequest,
+    ) -> remote::Result<model::TableInfo> {
+        todo!()
     }
 }

@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! MemTable based on skiplist
 
@@ -6,27 +18,27 @@ pub mod factory;
 pub mod iter;
 
 use std::{
-    cmp::Ordering,
     convert::TryInto,
     sync::atomic::{self, AtomicU64, AtomicUsize},
 };
 
 use arena::{Arena, BasicStats};
+use bytes_ext::Bytes;
 use codec::Encoder;
 use common_types::{
-    bytes::Bytes,
     row::{contiguous::ContiguousRowWriter, Row},
     schema::Schema,
     SequenceNumber,
 };
 use generic_error::BoxError;
 use log::{debug, trace};
-use skiplist::{KeyComparator, Skiplist};
+use skiplist::{BytewiseComparator, Skiplist};
 use snafu::{ensure, ResultExt};
 
 use crate::memtable::{
     key::{ComparableInternalKey, KeySequence},
-    skiplist::iter::{ColumnarIterImpl, ReversedColumnarIterator},
+    reversed_iter::ReversedColumnarIterator,
+    skiplist::iter::ColumnarIterImpl,
     ColumnarIterPtr, EncodeInternalKey, InvalidPutSequence, InvalidRow, MemTable,
     Metrics as MemtableMetrics, PutContext, Result, ScanContext, ScanRequest,
 };
@@ -184,33 +196,19 @@ impl<A: Arena<Stats = BasicStats> + Clone + Sync + Send + 'static> MemTable
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BytewiseComparator;
-
-impl KeyComparator for BytewiseComparator {
-    #[inline]
-    fn compare_key(&self, lhs: &[u8], rhs: &[u8]) -> Ordering {
-        lhs.cmp(rhs)
-    }
-
-    #[inline]
-    fn same_key(&self, lhs: &[u8], rhs: &[u8]) -> bool {
-        lhs == rhs
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
     use std::{ops::Bound, sync::Arc};
 
     use arena::NoopCollector;
+    use bytes_ext::ByteVec;
     use codec::memcomparable::MemComparable;
     use common_types::{
-        bytes::ByteVec,
         datum::Datum,
         projected_schema::ProjectedSchema,
         record_batch::RecordBatchWithKey,
+        row::Row,
         schema::IndexInWriterSchema,
         tests::{build_row, build_schema},
         time::Timestamp,

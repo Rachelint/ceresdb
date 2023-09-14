@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Functions.
 
@@ -8,11 +20,11 @@ use std::{
 };
 
 use arrow::datatypes::DataType;
-use common_types::{column::ColumnBlock, datum::DatumKind};
+use common_types::{column_block::ColumnBlock, datum::DatumKind};
 use datafusion::{
     error::DataFusionError,
     logical_expr::{
-        AccumulatorFunctionImplementation, ReturnTypeFunction, ScalarFunctionImplementation,
+        AccumulatorFactoryFunction, ReturnTypeFunction, ScalarFunctionImplementation,
         Signature as DfSignature, StateTypeFunction, TypeSignature as DfTypeSignature, Volatility,
     },
     physical_plan::ColumnarValue as DfColumnarValue,
@@ -32,7 +44,9 @@ const FUNC_ARG_NUM: usize = 5;
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
     #[snafu(display("Failed to convert array to ColumnarValue, err:{}", source))]
-    InvalidArray { source: common_types::column::Error },
+    InvalidArray {
+        source: common_types::column_block::Error,
+    },
 
     #[snafu(display("Invalid function arguments, err:{}", source))]
     InvalidArguments { source: GenericError },
@@ -253,7 +267,7 @@ impl ScalarFunction {
 pub struct AggregateFunction {
     type_signature: TypeSignature,
     return_type: ReturnType,
-    df_accumulator: AccumulatorFunctionImplementation,
+    df_accumulator: AccumulatorFactoryFunction,
     state_type: Vec<DatumKind>,
 }
 
@@ -301,7 +315,7 @@ impl AggregateFunction {
     }
 
     #[inline]
-    pub(crate) fn to_datafusion_accumulator(&self) -> AccumulatorFunctionImplementation {
+    pub(crate) fn to_datafusion_accumulator(&self) -> AccumulatorFactoryFunction {
         self.df_accumulator.clone()
     }
 

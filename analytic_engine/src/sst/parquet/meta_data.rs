@@ -1,10 +1,22 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // MetaData for SST based on parquet.
 
 use std::{fmt, ops::Index, sync::Arc};
 
-use bytes::Bytes;
+use bytes_ext::Bytes;
 use ceresdbproto::{schema as schema_pb, sst as sst_pb};
 use common_types::{
     datum::DatumKind,
@@ -336,7 +348,6 @@ pub struct ParquetMetaData {
     pub max_sequence: SequenceNumber,
     pub schema: Schema,
     pub parquet_filter: Option<ParquetFilter>,
-    pub collapsible_cols_idx: Vec<u32>,
 }
 
 pub type ParquetMetaDataRef = Arc<ParquetMetaData>;
@@ -350,7 +361,6 @@ impl From<MetaData> for ParquetMetaData {
             max_sequence: meta.max_sequence,
             schema: meta.schema,
             parquet_filter: None,
-            collapsible_cols_idx: Vec::new(),
         }
     }
 }
@@ -363,6 +373,18 @@ impl From<ParquetMetaData> for MetaData {
             time_range: meta.time_range,
             max_sequence: meta.max_sequence,
             schema: meta.schema,
+        }
+    }
+}
+
+impl From<Arc<ParquetMetaData>> for MetaData {
+    fn from(meta: Arc<ParquetMetaData>) -> Self {
+        Self {
+            min_key: meta.min_key.clone(),
+            max_key: meta.max_key.clone(),
+            time_range: meta.time_range,
+            max_sequence: meta.max_sequence,
+            schema: meta.schema.clone(),
         }
     }
 }
@@ -383,7 +405,6 @@ impl fmt::Debug for ParquetMetaData {
                     .map(|filter| filter.size())
                     .unwrap_or(0),
             )
-            .field("collapsible_cols_idx", &self.collapsible_cols_idx)
             .finish()
     }
 }
@@ -397,7 +418,8 @@ impl From<ParquetMetaData> for sst_pb::ParquetMetaData {
             time_range: Some(src.time_range.into()),
             schema: Some(schema_pb::TableSchema::from(&src.schema)),
             filter: src.parquet_filter.map(|v| v.into()),
-            collapsible_cols_idx: src.collapsible_cols_idx,
+            // collapsible_cols_idx is used in hybrid format ,and it's deprecated.
+            collapsible_cols_idx: Vec::new(),
         }
     }
 }
@@ -423,7 +445,6 @@ impl TryFrom<sst_pb::ParquetMetaData> for ParquetMetaData {
             max_sequence: src.max_sequence,
             schema,
             parquet_filter,
-            collapsible_cols_idx: src.collapsible_cols_idx,
         })
     }
 }

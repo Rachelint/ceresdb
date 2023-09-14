@@ -1,4 +1,16 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! A cli to query sst meta data
 
@@ -204,7 +216,7 @@ async fn run(args: Args) -> Result<()> {
             for i in 0..fields.len() {
                 let column_meta = row_group.column(i);
                 let field_name = fields.get(i).unwrap().get_basic_info().name().to_string();
-                let mut field_stats = field_stats_map
+                let field_stats = field_stats_map
                     .entry(field_name)
                     .or_insert(FieldStatistics::default());
                 field_stats.compressed_size += column_meta.compressed_size();
@@ -274,12 +286,12 @@ async fn parse_metadata(
 
     let md = if page_indexes {
         let object_store_reader =
-            ObjectStoreReader::new(storage, path.clone(), Arc::new(parquet_metadata));
+            ObjectStoreReader::new(storage.clone(), path.clone(), Arc::new(parquet_metadata));
         let parquet_metadata =
             parquet_ext::meta_data::meta_with_page_indexes(object_store_reader).await?;
-        MetaData::try_new(&parquet_metadata, false)?
+        MetaData::try_new(&parquet_metadata, false, storage).await?
     } else {
-        MetaData::try_new(&parquet_metadata, false)?
+        MetaData::try_new(&parquet_metadata, false, storage).await?
     };
 
     Ok((md, metadata_size, kv_size))

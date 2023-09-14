@@ -1,15 +1,29 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! MemTable
 
+pub mod columnar;
 pub mod factory;
 pub mod key;
+mod reversed_iter;
 pub mod skiplist;
 
 use std::{ops::Bound, sync::Arc, time::Instant};
 
+use bytes_ext::{ByteVec, Bytes};
 use common_types::{
-    bytes::{ByteVec, Bytes},
     projected_schema::ProjectedSchema,
     record_batch::RecordBatchWithKey,
     row::Row,
@@ -18,12 +32,40 @@ use common_types::{
 };
 use generic_error::GenericError;
 use macros::define_result;
+use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 use trace_metric::MetricsCollector;
 
 use crate::memtable::key::KeySequence;
 
 const DEFAULT_SCAN_BATCH_SIZE: usize = 500;
+const MEMTABLE_TYPE_SKIPLIST: &str = "skiplist";
+const MEMTABLE_TYPE_COLUMNAR: &str = "columnar";
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub enum MemtableType {
+    SkipList,
+    Columnar,
+}
+
+impl MemtableType {
+    pub fn parse_from(s: &str) -> Self {
+        if s.eq_ignore_ascii_case(MEMTABLE_TYPE_COLUMNAR) {
+            MemtableType::Columnar
+        } else {
+            MemtableType::SkipList
+        }
+    }
+}
+
+impl ToString for MemtableType {
+    fn to_string(&self) -> String {
+        match self {
+            MemtableType::SkipList => MEMTABLE_TYPE_SKIPLIST.to_string(),
+            MemtableType::Columnar => MEMTABLE_TYPE_COLUMNAR.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -75,8 +117,23 @@ pub enum Error {
     #[snafu(display("Fail to iter in reverse order, err:{}", source))]
     IterReverse { source: GenericError },
 
-    #[snafu(display("Timeout when iter memtable.\nBacktrace:\n{}", backtrace))]
-    IterTimeout { backtrace: Backtrace },
+    #[snafu(display(
+        "Timeout when iter memtable, now:{:?}, deadline:{:?}.\nBacktrace:\n{}",
+        now,
+        deadline,
+        backtrace
+    ))]
+    IterTimeout {
+        now: Instant,
+        deadline: Instant,
+        backtrace: Backtrace,
+    },
+
+    #[snafu(display("msg:{msg}, err:{source}"))]
+    Internal { msg: String, source: GenericError },
+
+    #[snafu(display("msg:{msg}"))]
+    InternalNoCause { msg: String },
 }
 
 define_result!(Error);
@@ -173,7 +230,7 @@ pub trait MemTable {
         &self,
         ctx: &mut PutContext,
         sequence: KeySequence,
-        row: &Row,
+        row_group: &Row,
         schema: &Schema,
     ) -> Result<()>;
 

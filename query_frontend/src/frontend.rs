@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Frontend
 
@@ -69,6 +81,7 @@ pub struct Context {
     /// Id of the query request.
     pub request_id: RequestId,
     /// Parallelism to read table.
+    // TODO: seems useless, remove it?
     pub read_parallelism: usize,
     /// Deadline of this request
     pub deadline: Option<Instant>,
@@ -110,11 +123,7 @@ impl<P> Frontend<P> {
     }
 
     /// Parse the sql and returns the statements
-    pub fn parse_influxql(
-        &self,
-        _ctx: &mut Context,
-        influxql: &str,
-    ) -> Result<Vec<InfluxqlStatement>> {
+    pub fn parse_influxql(&self, _ctx: &Context, influxql: &str) -> Result<Vec<InfluxqlStatement>> {
         match influxql_parser::parse_statements(influxql) {
             Ok(stmts) => Ok(stmts),
             Err(e) => Err(Error::InvalidInfluxql {
@@ -127,7 +136,7 @@ impl<P> Frontend<P> {
 
 impl<P: MetaProvider> Frontend<P> {
     /// Create logical plan for the statement
-    pub fn statement_to_plan(&self, ctx: &mut Context, stmt: Statement) -> Result<Plan> {
+    pub fn statement_to_plan(&self, ctx: &Context, stmt: Statement) -> Result<Plan> {
         let planner = Planner::new(&self.provider, ctx.request_id, ctx.read_parallelism);
 
         planner.statement_to_plan(stmt).context(CreatePlan)
@@ -136,7 +145,7 @@ impl<P: MetaProvider> Frontend<P> {
     /// Experimental native promql support, not used in production yet.
     pub fn promql_expr_to_plan(
         &self,
-        ctx: &mut Context,
+        ctx: &Context,
         expr: Expr,
     ) -> Result<(Plan, Arc<ColumnNames>)> {
         let planner = Planner::new(&self.provider, ctx.request_id, ctx.read_parallelism);
@@ -147,25 +156,21 @@ impl<P: MetaProvider> Frontend<P> {
     /// Prometheus remote query support
     pub fn prom_remote_query_to_plan(
         &self,
-        ctx: &mut Context,
+        ctx: &Context,
         query: PromRemoteQuery,
     ) -> Result<RemoteQueryPlan> {
         let planner = Planner::new(&self.provider, ctx.request_id, ctx.read_parallelism);
         planner.remote_prom_req_to_plan(query).context(CreatePlan)
     }
 
-    pub fn influxql_stmt_to_plan(
-        &self,
-        ctx: &mut Context,
-        stmt: InfluxqlStatement,
-    ) -> Result<Plan> {
+    pub fn influxql_stmt_to_plan(&self, ctx: &Context, stmt: InfluxqlStatement) -> Result<Plan> {
         let planner = Planner::new(&self.provider, ctx.request_id, ctx.read_parallelism);
         planner.influxql_stmt_to_plan(stmt).context(CreatePlan)
     }
 
     pub fn write_req_to_plan(
         &self,
-        ctx: &mut Context,
+        ctx: &Context,
         schema_config: &SchemaConfig,
         write_table: &WriteTableRequest,
     ) -> Result<Plan> {

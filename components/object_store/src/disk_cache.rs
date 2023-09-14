@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! An ObjectStore implementation with disk as cache.
 //! The disk cache is a read-through caching, with page as its minimal cache
@@ -7,76 +19,95 @@
 //! Page is used for reasons below:
 //! - reduce file size in case of there are too many request with small range.
 
-use std::{collections::BTreeMap, fmt::Display, ops::Range, sync::Arc};
+use std::{fmt::Display, ops::Range, result::Result as StdResult, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use common_types::hash::SeaHasherBuilder;
+use chrono::{DateTime, Utc};
 use crc::{Crc, CRC_32_ISCSI};
 use futures::stream::BoxStream;
-use log::{debug, error, info};
+use hash_ext::SeaHasherBuilder;
+use log::{debug, error, info, warn};
 use lru::LruCache;
-use partitioned_lock::PartitionedMutexAsync;
-use prost::Message;
+use notifier::notifier::{ExecutionGuard, RequestNotifiers};
+use partitioned_lock::PartitionedMutex;
 use serde::{Deserialize, Serialize};
 use snafu::{ensure, Backtrace, ResultExt, Snafu};
 use time_ext;
 use tokio::{
-    fs::{File, OpenOptions},
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::Mutex,
+    fs::{self, File, OpenOptions},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt},
+    sync::oneshot::{self, error::RecvError, Receiver},
 };
 use upstream::{
     path::Path, Error as ObjectStoreError, GetResult, ListResult, MultipartId, ObjectMeta,
     ObjectStore, Result,
 };
 
-const MANIFEST_FILE: &str = "manifest.json";
-const CURRENT_VERSION: usize = 1;
+use crate::metrics::DISK_CACHE_DEDUP_COUNT;
+
+const FILE_SIZE_CACHE_CAP: usize = 1 << 18;
+const FILE_SIZE_CACHE_PARTITION_BITS: usize = 8;
 pub const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 
 #[derive(Debug, Snafu)]
 enum Error {
-    #[snafu(display(
-        "IO failed, file:{}, source:{}.\nbacktrace:\n{}",
-        file,
-        source,
-        backtrace
-    ))]
+    #[snafu(display("IO failed, file:{file}, source:{source}.\nbacktrace:\n{backtrace}",))]
     Io {
         file: String,
         source: std::io::Error,
         backtrace: Backtrace,
     },
 
+    #[snafu(display("Access is out of range, range:{range:?}, file_size:{file_size}, last_modified:{last_modified:?}, file:{file}.\nbacktrace:\n{backtrace}"))]
+    OutOfRange {
+        range: Range<usize>,
+        file_size: usize,
+        file: String,
+        last_modified: DateTime<Utc>,
+        backtrace: Backtrace,
+    },
+
     #[snafu(display(
-        "Failed to deserialize manifest, source:{}.\nbacktrace:\n{}",
-        source,
-        backtrace
+        "Partial write, expect bytes:{expect}, written:{written}.\nbacktrace:\n{backtrace}",
     ))]
+    PartialWrite {
+        expect: usize,
+        written: usize,
+        backtrace: Backtrace,
+    },
+
+    #[snafu(display("Failed to deserialize manifest, source:{source}.\nbacktrace:\n{backtrace}"))]
     DeserializeManifest {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
 
-    #[snafu(display(
-        "Failed to serialize manifest, source:{}.\nbacktrace:\n{}",
-        source,
-        backtrace
-    ))]
+    #[snafu(display("Failed to serialize manifest, source:{source}.\nbacktrace:\n{backtrace}"))]
     SerializeManifest {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
 
-    #[snafu(display("Invalid manifest page size, old:{}, new:{}.", old, new))]
+    #[snafu(display(
+        "Failed to receive bytes from channel, source:{source}.\nbacktrace:\n{backtrace}"
+    ))]
+    ReceiveBytesFromChannel {
+        backtrace: Backtrace,
+        source: RecvError,
+    },
+
+    #[snafu(display("Fetch data failed, error.\nbacktrace:\n{backtrace}"))]
+    FetchDataFromObjectStore { backtrace: Backtrace },
+
+    #[snafu(display("Wait notifier failed, message:{message}."))]
+    WaitNotifier { message: String },
+
+    #[snafu(display("Invalid manifest page size, old:{old}, new:{new}."))]
     InvalidManifest { old: usize, new: usize },
 
     #[snafu(display(
-        "Failed to persist cache, file:{}, source:{}.\nbacktrace:\n{}",
-        file,
-        source,
-        backtrace
+        "Failed to persist cache, file:{file}, source:{source}.\nbacktrace:\n{backtrace}",
     ))]
     PersistCache {
         file: String,
@@ -85,16 +116,14 @@ enum Error {
     },
 
     #[snafu(display(
-        "Failed to decode cache pb value, file:{}, source:{}.\nbacktrace:\n{}",
-        file,
-        source,
-        backtrace
+        "Failed to decode cache pb value, file:{file}, source:{source}.\nbacktrace:\n{backtrace}",
     ))]
     DecodeCache {
         file: String,
         source: prost::DecodeError,
         backtrace: Backtrace,
     },
+
     #[snafu(display("disk cache cap must large than 0",))]
     InvalidCapacity,
 }
@@ -108,6 +137,19 @@ impl From<Error> for ObjectStoreError {
     }
 }
 
+/// The result of read bytes of a page file.
+#[derive(Debug)]
+enum ReadBytesResult {
+    Integrate(Vec<u8>),
+    /// The page file is corrupted.
+    Corrupted {
+        file_size: usize,
+    },
+    /// The read range exceeds the file size.
+    OutOfRange,
+}
+
+/// The manifest for describing the meta of the disk cache.
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
     create_at: String,
@@ -115,12 +157,80 @@ struct Manifest {
     version: usize,
 }
 
-// TODO: support partition to reduce lock contention.
+impl Manifest {
+    const CURRENT_VERSION: usize = 2;
+    const FILE_NAME: &'static str = "manifest.json";
+
+    #[inline]
+    fn is_valid(&self, version: usize, page_size: usize) -> bool {
+        self.page_size == page_size && self.version == version
+    }
+}
+
+/// The encoder of the page file in the disk cache.
+///
+/// Following the payload, a footer [`PageFileEncoder::MAGIC_FOOTER`] is
+/// appended.
+struct PageFileEncoder {
+    payload: Bytes,
+}
+
+impl PageFileEncoder {
+    const MAGIC_FOOTER: [u8; 8] = [0, 0, 0, 0, b'c', b'e', b'r', b'e'];
+
+    async fn encode_and_persist<W>(&self, writer: &mut W, name: &str) -> Result<()>
+    where
+        W: AsyncWrite + std::marker::Unpin,
+    {
+        writer
+            .write_all(&self.payload[..])
+            .await
+            .context(Io { file: name })?;
+
+        writer
+            .write_all(&Self::MAGIC_FOOTER)
+            .await
+            .context(Io { file: name })?;
+
+        writer.flush().await.context(Io { file: name })?;
+
+        Ok(())
+    }
+
+    #[inline]
+    fn encoded_size(payload_len: usize) -> usize {
+        payload_len + Self::MAGIC_FOOTER.len()
+    }
+}
+
+/// The mapping is PageFileName -> PageMeta.
+type PageMetaCache = LruCache<String, PageMeta>;
+
+#[derive(Clone, Debug)]
+struct PageMeta {
+    file_size: usize,
+    // TODO: Introduce the CRC for integration check.
+}
+
 #[derive(Debug)]
 struct DiskCache {
     root_dir: String,
-    // Cache key is used as filename on disk.
-    cache: PartitionedMutexAsync<LruCache<String, ()>, SeaHasherBuilder>,
+    meta_cache: PartitionedMutex<PageMetaCache, SeaHasherBuilder>,
+}
+
+#[derive(Debug, Clone)]
+struct FileMeta {
+    last_modified: DateTime<Utc>,
+    size: usize,
+}
+
+impl From<ObjectMeta> for FileMeta {
+    fn from(v: ObjectMeta) -> Self {
+        FileMeta {
+            last_modified: v.last_modified,
+            size: v.size,
+        }
+    }
 }
 
 impl DiskCache {
@@ -133,126 +243,168 @@ impl DiskCache {
 
         Ok(Self {
             root_dir,
-            cache: PartitionedMutexAsync::try_new(init_lru, partition_bits, SeaHasherBuilder {})?,
+            meta_cache: PartitionedMutex::try_new(init_lru, partition_bits, SeaHasherBuilder {})?,
         })
     }
 
-    /// Update the cache.
-    ///
-    /// The returned value denotes whether succeed.
-    // TODO: We now hold lock when doing IO, possible to release it?
-    async fn update_cache(&self, key: String, value: Option<Bytes>) -> bool {
-        let mut cache = self.cache.lock(&key).await;
+    fn insert_page_meta(&self, filename: String, page_meta: PageMeta) -> Option<String> {
+        let mut cache = self.meta_cache.lock(&filename);
         debug!(
-            "Disk cache update, key:{}, len:{}, cap_per_part:{}.",
-            &key,
+            "Update the meta cache, file:{filename}, len:{}, cap_per_part:{}",
             cache.cap(),
-            cache.len(),
+            cache.len()
         );
 
-        // TODO: remove a batch of files to avoid IO during the following update cache.
-        if cache.len() >= cache.cap() {
-            let (filename, _) = cache.pop_lru().unwrap();
-            let file_path = std::path::Path::new(&self.root_dir)
-                .join(filename)
-                .into_os_string()
-                .into_string()
-                .unwrap();
+        cache
+            .push(filename, page_meta)
+            .map(|(filename, _)| filename)
+    }
 
-            debug!("Remove disk cache, filename:{}.", &file_path);
-            if let Err(e) = tokio::fs::remove_file(&file_path).await {
-                error!("Remove disk cache failed, file:{}, err:{}.", file_path, e);
+    async fn insert_data(&self, filename: String, value: Bytes) {
+        let page_meta = {
+            let file_size = PageFileEncoder::encoded_size(value.len());
+            PageMeta { file_size }
+        };
+        let evicted_file = self.insert_page_meta(filename.clone(), page_meta);
+
+        let do_persist = || async {
+            if let Err(e) = self.persist_bytes(&filename, value).await {
+                warn!("Failed to persist cache, file:{filename}, err:{e}");
             }
-        }
-
-        // Persist the value if needed
-        if let Some(value) = value {
-            if let Err(e) = self.persist_bytes(&key, value).await {
-                error!("Failed to persist cache, key:{}, err:{}.", key, e);
-                return false;
-            }
-        }
-
-        // Update the key
-        cache.push(key, ());
-
-        true
-    }
-
-    async fn insert(&self, key: String, value: Bytes) -> bool {
-        self.update_cache(key, Some(value)).await
-    }
-
-    async fn recover(&self, filename: String) -> bool {
-        self.update_cache(filename, None).await
-    }
-
-    async fn get(&self, key: &str) -> Option<Bytes> {
-        let mut cache = self.cache.lock(&key).await;
-        if cache.get(key).is_some() {
-            // TODO: release lock when doing IO
-            match self.read_bytes(key).await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    error!(
-                        "Read disk cache failed but ignored, key:{}, err:{}.",
-                        key, e
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    }
-
-    async fn persist_bytes(&self, filename: &str, value: Bytes) -> Result<()> {
-        let file_path = std::path::Path::new(&self.root_dir)
-            .join(filename)
-            .into_os_string()
-            .into_string()
-            .unwrap();
-
-        let mut file = File::create(&file_path).await.with_context(|| Io {
-            file: file_path.clone(),
-        })?;
-
-        let bytes = value.to_vec();
-        let pb_bytes = ceresdbproto::oss_cache::Bytes {
-            crc: CASTAGNOLI.checksum(&bytes),
-            value: bytes,
         };
 
-        file.write_all(&pb_bytes.encode_to_vec())
-            .await
-            .with_context(|| PersistCache {
-                file: file_path.clone(),
-            })?;
+        if let Some(evicted_file) = evicted_file {
+            if evicted_file == filename {
+                // No need to do persist and removal.
+                return;
+            }
 
-        Ok(())
+            // Persist the new bytes.
+            do_persist().await;
+
+            // Remove the evicted file.
+            debug!("Evicted file:{evicted_file} is to be removed");
+            self.remove_file_by_name(&evicted_file).await;
+        } else {
+            do_persist().await;
+        }
     }
 
-    async fn read_bytes(&self, filename: &str) -> Result<Bytes> {
+    /// Get the bytes from the disk cache.
+    ///
+    /// If the bytes is invalid (its size is different from the recorded one),
+    /// remove it and return None.
+    async fn get_data(&self, filename: &str, range: &Range<usize>) -> Option<Bytes> {
+        let file_size = {
+            let mut cache = self.meta_cache.lock(&filename);
+            match cache.get(filename) {
+                Some(page_meta) => page_meta.file_size,
+                None => return None,
+            }
+        };
+
+        match self.read_bytes(filename, range, file_size).await {
+            Ok(ReadBytesResult::Integrate(v)) => Some(v.into()),
+            Ok(ReadBytesResult::Corrupted {
+                file_size: real_file_size,
+            }) => {
+                warn!(
+                    "File:{filename} is corrupted, expect:{file_size}, got:{real_file_size}, and it will be removed",
+                );
+
+                {
+                    let mut cache = self.meta_cache.lock(&filename);
+                    cache.pop(filename);
+                }
+
+                self.remove_file_by_name(filename).await;
+
+                None
+            }
+            Ok(ReadBytesResult::OutOfRange) => {
+                warn!(
+                    "File:{filename} is not enough to read, range:{range:?}, file_size:{file_size}, and it will be removed",
+                );
+
+                {
+                    let mut cache = self.meta_cache.lock(&filename);
+                    cache.pop(filename);
+                }
+
+                self.remove_file_by_name(filename).await;
+
+                None
+            }
+            Err(e) => {
+                warn!("Failed to read file:{filename} from the disk cache, err:{e}");
+                None
+            }
+        }
+    }
+
+    async fn remove_file_by_name(&self, filename: &str) {
+        debug!("Try to remove file:{filename}");
+
         let file_path = std::path::Path::new(&self.root_dir)
             .join(filename)
             .into_os_string()
             .into_string()
             .unwrap();
 
-        let mut f = File::open(&file_path).await.with_context(|| Io {
-            file: file_path.clone(),
-        })?;
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf).await.with_context(|| Io {
-            file: file_path.clone(),
-        })?;
+        if let Err(e) = tokio::fs::remove_file(&file_path).await {
+            warn!("Failed to remove file:{file_path}, err:{e}");
+        }
+    }
 
-        let bytes = ceresdbproto::oss_cache::Bytes::decode(&*buf).with_context(|| DecodeCache {
-            file: file_path.clone(),
-        })?;
-        // TODO: CRC checking
+    async fn persist_bytes(&self, filename: &str, payload: Bytes) -> Result<()> {
+        let file_path = std::path::Path::new(&self.root_dir)
+            .join(filename)
+            .into_os_string()
+            .into_string()
+            .unwrap();
 
-        Ok(bytes.value.into())
+        let mut file = File::create(&file_path)
+            .await
+            .context(Io { file: &file_path })?;
+
+        let encoding = PageFileEncoder { payload };
+        encoding.encode_and_persist(&mut file, filename).await
+    }
+
+    /// Read the bytes from the cached file.
+    ///
+    /// If the file size is different from the `expect_file_size`, it'll be
+    /// thought as corrupted file.
+    async fn read_bytes(
+        &self,
+        filename: &str,
+        range: &Range<usize>,
+        expect_file_size: usize,
+    ) -> std::io::Result<ReadBytesResult> {
+        if PageFileEncoder::encoded_size(range.len()) > expect_file_size {
+            return Ok(ReadBytesResult::OutOfRange);
+        }
+
+        let file_path = std::path::Path::new(&self.root_dir)
+            .join(filename)
+            .into_os_string()
+            .into_string()
+            .unwrap();
+
+        let mut f = File::open(&file_path).await?;
+        let file_size = f.metadata().await?.len() as usize;
+        if expect_file_size != file_size {
+            return Ok(ReadBytesResult::Corrupted { file_size });
+        }
+
+        f.seek(std::io::SeekFrom::Start(range.start as u64)).await?;
+        let mut buf = vec![0; range.len()];
+        let n = f.read_exact(&mut buf).await?;
+        if n != range.len() {
+            return Ok(ReadBytesResult::OutOfRange);
+        }
+
+        Ok(ReadBytesResult::Integrate(buf))
     }
 }
 
@@ -260,8 +412,34 @@ impl Display for DiskCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskCache")
             .field("path", &self.root_dir)
-            .field("cache", &self.cache)
+            .field("cache", &self.meta_cache)
             .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Paging {
+    page_size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PageRangeResult {
+    aligned_start: usize,
+    num_pages: usize,
+}
+
+impl Paging {
+    fn page_range(&self, range: &Range<usize>) -> PageRangeResult {
+        // inclusive start
+        let aligned_start = range.start / self.page_size * self.page_size;
+        // exclusive end
+        let aligned_end = (range.end + self.page_size - 1) / self.page_size * self.page_size;
+        let num_pages = (aligned_end - aligned_start) / self.page_size;
+
+        PageRangeResult {
+            aligned_start,
+            num_pages,
+        }
     }
 }
 
@@ -279,13 +457,11 @@ impl Display for DiskCache {
 #[derive(Debug)]
 pub struct DiskCacheStore {
     cache: DiskCache,
-    // Max disk capacity cache use can
     cap: usize,
-    // Size of each cached bytes
     page_size: usize,
-    // location path size cache
-    size_cache: Arc<Mutex<LruCache<String, usize>>>,
+    meta_cache: PartitionedMutex<LruCache<Path, FileMeta>, SeaHasherBuilder>,
     underlying_store: Arc<dyn ObjectStore>,
+    request_notifiers: Arc<RequestNotifiers<String, oneshot::Sender<StdResult<Bytes, Error>>>>,
 }
 
 impl DiskCacheStore {
@@ -296,62 +472,97 @@ impl DiskCacheStore {
         underlying_store: Arc<dyn ObjectStore>,
         partition_bits: usize,
     ) -> Result<Self> {
-        let page_num_per_part = cap / page_size;
-        ensure!(page_num_per_part != 0, InvalidCapacity);
-        let _ = Self::create_manifest_if_not_exists(&cache_dir, page_size).await?;
-        let cache = DiskCache::try_new(cache_dir.clone(), page_num_per_part, partition_bits)?;
+        let page_num = cap / page_size;
+        ensure!(page_num != 0, InvalidCapacity);
+
+        let manifest = Self::create_manifest_if_not_exists(&cache_dir, page_size).await?;
+        if !manifest.is_valid(Manifest::CURRENT_VERSION, page_size) {
+            Self::reset_cache(&cache_dir, page_size).await?;
+        }
+
+        let cache = DiskCache::try_new(cache_dir.clone(), page_num, partition_bits)?;
         Self::recover_cache(&cache_dir, &cache).await?;
 
-        let size_cache = Arc::new(Mutex::new(LruCache::new(cap / page_size)));
+        let init_size_lru = |partition_num| -> Result<_> {
+            let cap_per_part = FILE_SIZE_CACHE_CAP / partition_num;
+            assert!(cap_per_part > 0);
+            Ok(LruCache::new(cap_per_part))
+        };
+        let meta_cache = PartitionedMutex::try_new(
+            init_size_lru,
+            FILE_SIZE_CACHE_PARTITION_BITS,
+            SeaHasherBuilder,
+        )?;
+
+        let request_notifiers = Arc::new(RequestNotifiers::default());
 
         Ok(Self {
             cache,
-            size_cache,
             cap,
             page_size,
+            meta_cache,
             underlying_store,
+            request_notifiers,
         })
     }
 
-    async fn create_manifest_if_not_exists(cache_dir: &str, page_size: usize) -> Result<Manifest> {
+    async fn reset_cache(cache_dir_path: &str, page_size: usize) -> Result<()> {
+        warn!("The manifest is outdated, the object store cache will be cleared");
+
+        fs::remove_dir_all(cache_dir_path).await.context(Io {
+            file: cache_dir_path,
+        })?;
+
+        Self::create_manifest_if_not_exists(cache_dir_path, page_size).await?;
+
+        Ok(())
+    }
+
+    async fn create_manifest_if_not_exists(
+        cache_dir_path: &str,
+        page_size: usize,
+    ) -> Result<Manifest> {
+        // TODO: introduce the manifest lock to avoid multiple process to modify the
+        // cache file data.
+
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .read(true)
             .truncate(false)
-            .open(std::path::Path::new(cache_dir).join(MANIFEST_FILE))
+            .open(std::path::Path::new(cache_dir_path).join(Manifest::FILE_NAME))
             .await
-            .with_context(|| Io {
-                file: MANIFEST_FILE.to_string(),
+            .context(Io {
+                file: Manifest::FILE_NAME,
             })?;
 
-        let metadata = file.metadata().await.with_context(|| Io {
-            file: MANIFEST_FILE.to_string(),
+        let metadata = file.metadata().await.context(Io {
+            file: Manifest::FILE_NAME,
         })?;
 
-        // empty file, create a new one
+        // Initialize the manifest if it doesn't exist.
         if metadata.len() == 0 {
             let manifest = Manifest {
                 page_size,
                 create_at: time_ext::current_as_rfc3339(),
-                version: CURRENT_VERSION,
+                version: Manifest::CURRENT_VERSION,
             };
 
             let buf = serde_json::to_vec_pretty(&manifest).context(SerializeManifest)?;
-            file.write_all(&buf).await.with_context(|| Io {
-                file: MANIFEST_FILE.to_string(),
+            file.write_all(&buf).await.context(Io {
+                file: Manifest::FILE_NAME,
             })?;
 
             return Ok(manifest);
         }
 
         let mut buf = Vec::new();
-        file.read_to_end(&mut buf).await.with_context(|| Io {
-            file: MANIFEST_FILE.to_string(),
+        file.read_to_end(&mut buf).await.context(Io {
+            file: Manifest::FILE_NAME,
         })?;
 
+        // TODO: Maybe we should clear all the cache when the manifest is corrupted.
         let manifest: Manifest = serde_json::from_slice(&buf).context(DeserializeManifest)?;
-
         ensure!(
             manifest.page_size == page_size,
             InvalidManifest {
@@ -359,48 +570,178 @@ impl DiskCacheStore {
                 new: page_size
             }
         );
-        // TODO: check version
 
         Ok(manifest)
     }
 
-    async fn recover_cache(cache_dir: &str, cache: &DiskCache) -> Result<()> {
-        let mut cache_dir = tokio::fs::read_dir(cache_dir).await.with_context(|| Io {
-            file: cache_dir.to_string(),
+    async fn recover_cache(cache_dir_path: &str, cache: &DiskCache) -> Result<()> {
+        let mut cache_dir = tokio::fs::read_dir(cache_dir_path).await.context(Io {
+            file: cache_dir_path,
         })?;
 
-        // TODO: sort by access time
         while let Some(entry) = cache_dir.next_entry().await.with_context(|| Io {
-            file: "entry when iter cache_dir".to_string(),
+            file: format!("a file in the cache_dir:{cache_dir_path}"),
         })? {
-            let filename = entry.file_name().into_string().unwrap();
-            info!("Disk cache recover_cache, filename:{}.", &filename);
-
-            if filename != MANIFEST_FILE {
-                cache.recover(filename).await;
+            let file_name = entry.file_name().into_string().unwrap();
+            if file_name == Manifest::FILE_NAME {
+                // Skip the manifest file.
+                continue;
             }
+
+            let file_size = match entry.metadata().await {
+                Ok(metadata) => metadata.len() as usize,
+                Err(e) => {
+                    warn!("Failed to get the size of file:{file_name}, and it will be skipped for recover, err:{e}");
+                    // TODO: Maybe we should remove this file.
+                    continue;
+                }
+            };
+            info!("Disk cache recover_cache, filename:{file_name}, size:{file_size}");
+            let page_meta = PageMeta { file_size };
+            cache.insert_page_meta(file_name, page_meta);
         }
 
         Ok(())
     }
 
-    fn normalize_range(&self, max_size: usize, range: &Range<usize>) -> Vec<Range<usize>> {
-        let start = range.start / self.page_size * self.page_size;
-        let end = (range.end + self.page_size - 1) / self.page_size * self.page_size;
-
-        (start..end.min(max_size))
-            .step_by(self.page_size)
-            .map(|start| start..(start + self.page_size).min(max_size))
-            .collect::<Vec<_>>()
-    }
-
-    fn cache_key(location: &Path, range: &Range<usize>) -> String {
+    /// Generate the filename of a page file.
+    fn page_cache_name(location: &Path, range: &Range<usize>) -> String {
         format!(
             "{}-{}-{}",
             location.as_ref().replace('/', "-"),
             range.start,
             range.end
         )
+    }
+
+    async fn deduped_fetch_data(
+        &self,
+        location: &Path,
+        aligned_ranges: impl IntoIterator<Item = Range<usize>>,
+    ) -> Result<Vec<Receiver<StdResult<Bytes, Error>>>> {
+        let aligned_ranges = aligned_ranges.into_iter();
+        let (size, _) = aligned_ranges.size_hint();
+        let mut rxs = Vec::with_capacity(size);
+        let mut need_fetch_block = Vec::new();
+        let mut need_fetch_block_cache_key = Vec::new();
+
+        for aligned_range in aligned_ranges {
+            let (tx, rx) = oneshot::channel();
+            let cache_key = Self::page_cache_name(location, &aligned_range);
+
+            if let notifier::notifier::RequestResult::First = self
+                .request_notifiers
+                .insert_notifier(cache_key.to_owned(), tx)
+            {
+                need_fetch_block.push(aligned_range);
+                need_fetch_block_cache_key.push(cache_key);
+            } else {
+                DISK_CACHE_DEDUP_COUNT.inc();
+            }
+
+            rxs.push(rx);
+        }
+
+        if need_fetch_block.is_empty() {
+            // All ranges are not first request, return directly.
+            return Ok(rxs);
+        }
+
+        let fetched_bytes = {
+            // This guard will ensure notifiers got released when futures get cancelled
+            // during `get_ranges`.
+            let mut guard = ExecutionGuard::new(|| {
+                for cache_key in &need_fetch_block_cache_key {
+                    let _ = self.request_notifiers.take_notifiers(cache_key);
+                }
+            });
+
+            let bytes = self
+                .underlying_store
+                .get_ranges(location, &need_fetch_block)
+                .await;
+
+            guard.cancel();
+            bytes
+        };
+
+        // Take all cache_key's notifiers out from request_notifiers immediately.
+        let notifiers_vec: Vec<_> = need_fetch_block_cache_key
+            .iter()
+            .map(|cache_key| self.request_notifiers.take_notifiers(cache_key).unwrap())
+            .collect();
+
+        let fetched_bytes = match fetched_bytes {
+            Err(err) => {
+                for notifiers in notifiers_vec {
+                    for notifier in notifiers {
+                        if let Err(e) = notifier.send(
+                            WaitNotifier {
+                                message: err.to_string(),
+                            }
+                            .fail(),
+                        ) {
+                            error!("Failed to send notifier error result, err:{e:?}.");
+                        }
+                    }
+                }
+
+                return Err(err);
+            }
+            Ok(v) => v,
+        };
+
+        for ((bytes, notifiers), cache_key) in fetched_bytes
+            .into_iter()
+            .zip(notifiers_vec.into_iter())
+            .zip(need_fetch_block_cache_key.into_iter())
+        {
+            self.cache.insert_data(cache_key, bytes.clone()).await;
+            for notifier in notifiers {
+                if let Err(e) = notifier.send(Ok(bytes.clone())) {
+                    error!("Failed to send notifier success result, err:{e:?}.");
+                }
+            }
+        }
+
+        Ok(rxs)
+    }
+
+    /// Fetch the data from the underlying store and then cache it.
+    async fn fetch_and_cache_data(
+        &self,
+        location: &Path,
+        aligned_range: &Range<usize>,
+    ) -> Result<Bytes> {
+        let mut rxs = self
+            .deduped_fetch_data(location, [aligned_range.clone()])
+            .await?;
+
+        assert_eq!(rxs.len(), 1);
+
+        let rx = rxs.remove(0);
+        let bytes = rx.await.context(ReceiveBytesFromChannel)??;
+        Ok(bytes)
+    }
+
+    /// Fetch the file meta from the cache or the underlying store.
+    async fn fetch_file_meta(&self, location: &Path) -> Result<FileMeta> {
+        {
+            let mut cache = self.meta_cache.lock(location);
+            if let Some(file_meta) = cache.get(location) {
+                return Ok(file_meta.clone());
+            }
+        }
+        // The file meta is miss from the cache, let's fetch it from the
+        // underlying store.
+
+        let meta = self.underlying_store.head(location).await?;
+        let file_meta = FileMeta::from(meta);
+        {
+            let mut cache = self.meta_cache.lock(location);
+            cache.push(location.clone(), file_meta.clone());
+        }
+        Ok(file_meta)
     }
 }
 
@@ -433,83 +774,143 @@ impl ObjectStore for DiskCacheStore {
             .await
     }
 
-    // TODO: don't cache whole path for reasons below
-    // In sst module, we only use get_range, get is not used
     async fn get(&self, location: &Path) -> Result<GetResult> {
+        // In sst module, we only use get_range, fetching a whole file is not used, and
+        // it is not good for disk cache.
         self.underlying_store.get(location).await
     }
 
     async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
-        // TODO: aligned_range will larger than real file size, need to truncate
-        let file_size = {
-            let mut size_cache = self.size_cache.lock().await;
-            if let Some(size) = size_cache.get(location.as_ref()) {
-                *size
-            } else {
-                // release lock before doing IO
-                drop(size_cache);
-
-                // TODO: multiple threads may go here, how to fix?
-                let object_meta = self.head(location).await?;
-                {
-                    let mut size_cache = self.size_cache.lock().await;
-                    size_cache.put(location.to_string(), object_meta.size);
-                }
-                object_meta.size
+        let file_meta = self.fetch_file_meta(location).await?;
+        ensure!(
+            file_meta.size >= range.end,
+            OutOfRange {
+                range,
+                file_size: file_meta.size,
+                last_modified: file_meta.last_modified,
+                file: location.to_string()
             }
+        );
+
+        let PageRangeResult {
+            aligned_start,
+            num_pages,
+        } = {
+            let paging = Paging {
+                page_size: self.page_size,
+            };
+            paging.page_range(&range)
+        };
+        assert!(num_pages > 0);
+
+        // Fast path for only one page involved.
+        if num_pages == 1 {
+            let aligned_end = (aligned_start + self.page_size).min(file_meta.size);
+            let aligned_range = aligned_start..aligned_end;
+            let filename = Self::page_cache_name(location, &aligned_range);
+            let range_in_file = (range.start - aligned_start)..(range.end - aligned_start);
+            if let Some(bytes) = self.cache.get_data(&filename, &range_in_file).await {
+                return Ok(bytes);
+            }
+            // This page is missing from the disk cache, let's fetch it from the
+            // underlying store and insert it to the disk cache.
+            let aligned_bytes = self.fetch_and_cache_data(location, &aligned_range).await?;
+
+            // Allocate a new buffer instead of the `aligned_bytes` to avoid memory
+            // overhead.
+            let mut bytes_buf = BytesMut::with_capacity(range.len());
+            bytes_buf.extend_from_slice(
+                &aligned_bytes[(range.start - aligned_start)..(range.end - aligned_start)],
+            );
+            return Ok(bytes_buf.freeze());
+        }
+
+        // The queried range involves multiple ranges.
+        // Here is an example to explain the paged bytes, saying range = [3, 33),
+        // page_size = 16, then aligned ranges will be [0, 16), [16, 32), [32,
+        // 48), and we need to combine those ranged bytes to get final result bytes.
+        let mut paged_bytes: Vec<Option<Bytes>> = vec![None; num_pages];
+        let mut num_missing_pages = 0;
+        {
+            let mut page_start = aligned_start;
+            let mut page_idx = 0;
+            while page_idx < num_pages {
+                let page_end = (page_start + self.page_size).min(file_meta.size);
+                let range_in_file = {
+                    let real_start = page_start.max(range.start);
+                    let real_end = page_end.min(range.end);
+                    (real_start - page_start)..(real_end - page_start)
+                };
+                let filename = Self::page_cache_name(location, &(page_start..page_end));
+                if let Some(bytes) = self.cache.get_data(&filename, &range_in_file).await {
+                    paged_bytes[page_idx] = Some(bytes);
+                } else {
+                    num_missing_pages += 1;
+                }
+
+                page_start += self.page_size;
+                page_idx += 1;
+            }
+        }
+
+        let concat_paged_bytes = |paged_bytes: Vec<Option<Bytes>>| {
+            // Concat the paged bytes.
+            let mut byte_buf = BytesMut::with_capacity(range.len());
+            for bytes in paged_bytes {
+                byte_buf.extend(bytes);
+            }
+            Ok(byte_buf.freeze())
         };
 
-        let aligned_ranges = self.normalize_range(file_size, &range);
+        if num_missing_pages == 0 {
+            return concat_paged_bytes(paged_bytes);
+        }
 
-        let mut ranged_bytes = BTreeMap::new();
-        let mut missing_ranges = Vec::new();
-        for range in aligned_ranges {
-            let cache_key = Self::cache_key(location, &range);
-            if let Some(bytes) = self.cache.get(&cache_key).await {
-                ranged_bytes.insert(range.start, bytes);
-            } else {
-                missing_ranges.push(range);
+        // Fetch all the missing pages from the underlying store.
+        let mut missing_ranges = Vec::with_capacity(num_missing_pages);
+        let mut missing_range_idx = Vec::with_capacity(num_missing_pages);
+        for (idx, cache_miss) in paged_bytes.iter().map(|v| v.is_none()).enumerate() {
+            if cache_miss {
+                let missing_range_start = aligned_start + idx * self.page_size;
+                let missing_range_end = (missing_range_start + self.page_size).min(file_meta.size);
+                missing_ranges.push(missing_range_start..missing_range_end);
+                missing_range_idx.push(idx);
             }
         }
 
-        for range in missing_ranges {
-            let range_start = range.start;
-            let cache_key = Self::cache_key(location, &range);
-            // TODO: we should use get_ranges here.
-            let bytes = self.underlying_store.get_range(location, range).await?;
-            self.cache.insert(cache_key, bytes.clone()).await;
-            ranged_bytes.insert(range_start, bytes);
+        let mut missing_ranged_bytes = Vec::with_capacity(missing_ranges.len());
+        let rxs = self
+            .deduped_fetch_data(location, missing_ranges.clone())
+            .await?;
+        for rx in rxs {
+            let bytes = rx.await.context(ReceiveBytesFromChannel)??;
+            missing_ranged_bytes.push(bytes);
         }
 
-        // we get all bytes for each aligned_range, organize real bytes
-        // fast path
-        if ranged_bytes.len() == 1 {
-            let (range_start, bytes) = ranged_bytes.pop_first().unwrap();
-            let result = bytes.slice((range.start - range_start)..(range.end - range_start));
-            return Ok(result);
+        assert_eq!(missing_ranged_bytes.len(), missing_ranges.len());
+
+        for ((missing_range, missing_range_idx), bytes) in missing_ranges
+            .into_iter()
+            .zip(missing_range_idx.into_iter())
+            .zip(missing_ranged_bytes.into_iter())
+        {
+            let offset = missing_range.start;
+            let truncated_range = (missing_range.start.max(range.start) - offset)
+                ..(missing_range.end.min(range.end) - offset);
+
+            paged_bytes[missing_range_idx] = Some(bytes.slice(truncated_range));
         }
 
-        // there are multiple aligned ranges for one request, such as
-        // range = [3, 33), page_size = 16, then aligned ranges will be
-        // [0, 16), [16, 32), [32, 48)
-        // we need to combine those ranged bytes to get final result bytes
-
-        let mut byte_buf = BytesMut::with_capacity(range.end - range.start);
-        let (range_start, bytes) = ranged_bytes.pop_first().unwrap();
-        byte_buf.extend(bytes.slice((range.start - range_start)..));
-        let (range_start, bytes) = ranged_bytes.pop_last().unwrap();
-        let last_part = bytes.slice(..(range.end - range_start));
-
-        for bytes in ranged_bytes.into_values() {
-            byte_buf.extend(bytes);
-        }
-        byte_buf.extend(last_part);
-
-        Ok(byte_buf.freeze())
+        return concat_paged_bytes(paged_bytes);
     }
 
     async fn head(&self, location: &Path) -> Result<ObjectMeta> {
-        self.underlying_store.head(location).await
+        let file_meta = self.fetch_file_meta(location).await?;
+        Ok(ObjectMeta {
+            location: location.clone(),
+            last_modified: file_meta.last_modified,
+            size: file_meta.size,
+        })
     }
 
     async fn delete(&self, location: &Path) -> Result<()> {
@@ -570,48 +971,30 @@ mod test {
         }
     }
 
-    #[tokio::test]
-    async fn test_normalize_range_less_than_file_size() {
-        let page_size = 16;
-        let testcases = vec![
-            (0..1, vec![0..16]),
-            (0..16, vec![0..16]),
-            (0..17, vec![0..16, 16..32]),
-            (16..32, vec![16..32]),
-            (
-                16..100,
-                vec![16..32, 32..48, 48..64, 64..80, 80..96, 96..112],
-            ),
-        ];
-
-        let store = prepare_store(page_size, 1024, 0).await;
-        for (input, expected) in testcases {
-            assert_eq!(store.inner.normalize_range(1024, &input), expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_normalize_range_great_than_file_size() {
-        let page_size = 16;
-        let testcases = vec![
-            (0..1, vec![0..16]),
-            (0..16, vec![0..16]),
-            (0..17, vec![0..16, 16..20]),
-            (16..32, vec![16..20]),
-            (32..100, vec![]),
-        ];
-
-        let store = prepare_store(page_size, 1024, 0).await;
-        for (input, expected) in testcases {
-            assert_eq!(store.inner.normalize_range(20, &input), expected);
-        }
-    }
-
     fn test_file_exists(cache_dir: &TempDir, location: &Path, range: &Range<usize>) -> bool {
         cache_dir
             .path()
-            .join(DiskCacheStore::cache_key(location, range))
+            .join(DiskCacheStore::page_cache_name(location, range))
             .exists()
+    }
+
+    #[tokio::test]
+    async fn test_disk_cache_out_of_range() {
+        let page_size = 16;
+        // 51 byte
+        let data = b"a b c d e f g h i j k l m n o p q r s t u v w x y z";
+        let location = Path::from("out_of_range_test.sst");
+        let store = prepare_store(page_size, 32, 0).await;
+        let buf = Bytes::from_static(data);
+        store.inner.put(&location, buf.clone()).await.unwrap();
+
+        // Read one page out of range.
+        let res = store.inner.get_range(&location, 48..54).await;
+        assert!(res.is_err());
+
+        // Read multiple pages out of range.
+        let res = store.inner.get_range(&location, 24..54).await;
+        assert!(res.is_err());
     }
 
     #[tokio::test]
@@ -648,26 +1031,25 @@ mod test {
 
         // remove cached values, then get again
         {
-            for range in vec![0..16, 16..32, 32..48, 48..64, 64..80, 80..96, 96..112] {
+            for range in [0..16, 16..32, 32..48, 48..64, 64..80, 80..96, 96..112] {
                 let data_cache = store
                     .inner
                     .cache
-                    .cache
-                    .lock(&DiskCacheStore::cache_key(&location, &range).as_str())
-                    .await;
-                assert!(data_cache.contains(DiskCacheStore::cache_key(&location, &range).as_str()));
+                    .meta_cache
+                    .lock(&DiskCacheStore::page_cache_name(&location, &range).as_str());
+                assert!(data_cache
+                    .contains(DiskCacheStore::page_cache_name(&location, &range).as_str()));
                 assert!(test_file_exists(&store.cache_dir, &location, &range));
             }
 
-            for range in vec![16..32, 48..64, 80..96] {
+            for range in [16..32, 48..64, 80..96] {
                 let mut data_cache = store
                     .inner
                     .cache
-                    .cache
-                    .lock(&DiskCacheStore::cache_key(&location, &range).as_str())
-                    .await;
+                    .meta_cache
+                    .lock(&DiskCacheStore::page_cache_name(&location, &range).as_str());
                 assert!(data_cache
-                    .pop(&DiskCacheStore::cache_key(&location, &range))
+                    .pop(&DiskCacheStore::page_cache_name(&location, &range))
                     .is_some());
             }
         }
@@ -678,6 +1060,52 @@ mod test {
                 b"i j k l m n o p q r s t u v w x y za b c d e f g h i j k l m n o p q r s t u v w x y"
             )
         );
+    }
+
+    #[tokio::test]
+    async fn test_disk_cache_multi_thread_fetch_same_block() {
+        let page_size = 16;
+        // 51 byte
+        let data = b"a b c d e f g h i j k l m n o p q r s t u v w x y z";
+        let location = Path::from("1.sst");
+        let store = Arc::new(prepare_store(page_size, 32, 0).await);
+
+        let mut buf = BytesMut::with_capacity(data.len() * 4);
+        // extend 4 times, then location will contain 200 bytes
+        for _ in 0..4 {
+            buf.extend_from_slice(data);
+        }
+        store.inner.put(&location, buf.freeze()).await.unwrap();
+
+        let testcases = vec![
+            (0..6, "a b c "),
+            (0..16, "a b c d e f g h "),
+            (0..17, "a b c d e f g h i"),
+            (16..17, "i"),
+            (16..100, "i j k l m n o p q r s t u v w x y za b c d e f g h i j k l m n o p q r s t u v w x y"),
+        ];
+        let testcases = testcases
+            .iter()
+            .cycle()
+            .take(testcases.len() * 100)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut tasks = Vec::with_capacity(testcases.len());
+        for (input, _) in &testcases {
+            let store = store.clone();
+            let location = location.clone();
+            let input = input.clone();
+
+            tasks.push(tokio::spawn(async move {
+                store.inner.get_range(&location, input).await.unwrap()
+            }));
+        }
+
+        let actual = futures::future::join_all(tasks).await;
+        for (actual, (_, expected)) in actual.into_iter().zip(testcases.into_iter()) {
+            assert_eq!(actual.unwrap(), Bytes::from(expected))
+        }
     }
 
     #[tokio::test]
@@ -795,7 +1223,7 @@ mod test {
                     .unwrap();
 
             assert_eq!(manifest.page_size, 8);
-            assert_eq!(manifest.version, 1);
+            assert_eq!(manifest.version, Manifest::CURRENT_VERSION);
             manifest.create_at
         };
 
@@ -816,7 +1244,7 @@ mod test {
                     .unwrap();
             assert_eq!(manifest.create_at, first_create_time);
             assert_eq!(manifest.page_size, 8);
-            assert_eq!(manifest.version, 1);
+            assert_eq!(manifest.version, Manifest::CURRENT_VERSION);
         }
 
         // open again, but with different page_size
@@ -857,12 +1285,15 @@ mod test {
             for _ in 0..1024 {
                 buf.extend_from_slice(data);
             }
-            store.put(&location, buf.freeze()).await.unwrap();
-            assert!(!store
-                .get_range(&location, 16..100)
+            let buf = buf.freeze();
+            store.put(&location, buf.clone()).await.unwrap();
+            let read_range = 16..100;
+            let bytes = store
+                .get_range(&location, read_range.clone())
                 .await
-                .unwrap()
-                .is_empty());
+                .unwrap();
+            assert_eq!(bytes.len(), read_range.len());
+            assert_eq!(bytes[..], buf[read_range])
         };
 
         // recover
@@ -875,13 +1306,10 @@ mod test {
                     .await
                     .unwrap()
             };
-            for range in vec![16..32, 32..48, 48..64, 64..80, 80..96, 96..112] {
-                let cache = store
-                    .cache
-                    .cache
-                    .lock(&DiskCacheStore::cache_key(&location, &range).as_str())
-                    .await;
-                assert!(cache.contains(&DiskCacheStore::cache_key(&location, &range)));
+            for range in [16..32, 32..48, 48..64, 64..80, 80..96, 96..112] {
+                let filename = DiskCacheStore::page_cache_name(&location, &range);
+                let cache = store.cache.meta_cache.lock(&filename);
+                assert!(cache.contains(&filename));
                 assert!(test_file_exists(&cache_dir, &location, &range));
             }
         };
@@ -898,11 +1326,17 @@ mod test {
     }
 
     #[tokio::test]
-    async fn corrupted_disk_cache() {
+    async fn test_corrupt_disk_cache() {
+        for page_size in [1, 2, 4, 8, 16, 32, 64, 128] {
+            corrupt_disk_cache(page_size).await;
+        }
+    }
+
+    async fn corrupt_disk_cache(page_size: usize) {
         let StoreWithCacheDir {
             inner: store,
             cache_dir,
-        } = prepare_store(16, 1024, 0).await;
+        } = prepare_store(page_size, 1024, 0).await;
         let test_file_name = "corrupted_disk_cache_file";
         let test_file_path = Path::from(test_file_name);
         let test_file_bytes = Bytes::from("corrupted_disk_cache_file_data");
@@ -928,10 +1362,13 @@ mod test {
             if path.contains(test_file_name) {
                 let mut file = tokio::fs::OpenOptions::new()
                     .write(true)
+                    .truncate(true)
                     .open(path)
                     .await
                     .unwrap();
-                file.write_all(b"corrupted").await.unwrap();
+                // TODO: currently the data integrity is checked based on the file size, so here
+                // we give a bytes with designed length to make the check failed.
+                file.write_all(b"corrupt").await.unwrap();
             }
         }
 

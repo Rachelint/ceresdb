@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! A cli to convert ssts between different options
 
@@ -47,7 +59,7 @@ struct Args {
     #[clap(short, long, default_value_t = 8192)]
     batch_size: usize,
 
-    /// Storage format(values: columnar/hybrid)
+    /// Storage format(values: columnar)
     #[clap(short, long, default_value = "columnar")]
     output_format: String,
 }
@@ -80,7 +92,6 @@ async fn run(args: Args, runtime: Arc<Runtime>) -> Result<()> {
     let factory = FactoryImpl::default();
     let scan_options = ScanOptions::default();
     let reader_opts = SstReadOptions {
-        reverse: false,
         frequency: ReadFrequency::Once,
         num_rows_per_row_group: 8192,
         projected_schema: ProjectedSchema::no_projection(sst_meta.schema.clone()),

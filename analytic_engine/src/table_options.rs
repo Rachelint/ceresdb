@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Constants for table options.
 
@@ -6,7 +18,7 @@ use std::{collections::HashMap, string::ToString, time::Duration};
 
 use ceresdbproto::manifest as manifest_pb;
 use common_types::{
-    time::Timestamp, ARENA_BLOCK_SIZE, COMPACTION_STRATEGY, COMPRESSION, ENABLE_TTL,
+    time::Timestamp, ARENA_BLOCK_SIZE, COMPACTION_STRATEGY, COMPRESSION, ENABLE_TTL, MEMTABLE_TYPE,
     NUM_ROWS_PER_ROW_GROUP, OPTION_KEY_ENABLE_TTL, SEGMENT_DURATION, STORAGE_FORMAT, TTL,
     UPDATE_MODE, WRITE_BUFFER_SIZE,
 };
@@ -17,8 +29,11 @@ use size_ext::ReadableSize;
 use snafu::{Backtrace, GenerateBacktrace, OptionExt, ResultExt, Snafu};
 use time_ext::{parse_duration, DurationExt, ReadableDuration, TimeUnit};
 
-use crate::compaction::{
-    self, CompactionStrategy, SizeTieredCompactionOptions, TimeWindowCompactionOptions,
+use crate::{
+    compaction::{
+        self, CompactionStrategy, SizeTieredCompactionOptions, TimeWindowCompactionOptions,
+    },
+    memtable::MemtableType,
 };
 
 const UPDATE_MODE_OVERWRITE: &str = "OVERWRITE";
@@ -29,7 +44,6 @@ const COMPRESSION_SNAPPY: &str = "SNAPPY";
 const COMPRESSION_ZSTD: &str = "ZSTD";
 const STORAGE_FORMAT_AUTO: &str = "AUTO";
 const STORAGE_FORMAT_COLUMNAR: &str = "COLUMNAR";
-const STORAGE_FORMAT_HYBRID: &str = "HYBRID";
 
 /// Default bucket duration (1d)
 const BUCKET_DURATION_1D: Duration = Duration::from_secs(24 * 60 * 60);
@@ -114,6 +128,12 @@ pub enum Error {
 
     #[snafu(display("Storage format hint is missing.\nBacktrace:\n{}", backtrace))]
     MissingStorageFormatHint { backtrace: Backtrace },
+
+    #[snafu(display(
+        "Hybrid format is deprecated, and cannot be used any more.\nBacktrace:\n{}",
+        backtrace
+    ))]
+    HybridDeprecated { backtrace: Backtrace },
 }
 
 define_result!(Error);
@@ -241,25 +261,6 @@ pub enum StorageFormat {
     /// | .....     |           |             |       |       |
     /// ```
     Columnar,
-
-    /// Design for time-series data
-    /// Collapsible Columns within same primary key are collapsed
-    /// into list, other columns are the same format with columnar's.
-    ///
-    /// Whether a column is collapsible is decided by
-    /// `Schema::is_collapsible_column`
-    ///
-    /// Note: minTime/maxTime is optional and not implemented yet, mainly used
-    /// for time-range pushdown filter
-    ///
-    ///```plaintext
-    /// | Device ID | Timestamp           | Status Code | Tag 1 | Tag 2 | minTime | maxTime |
-    /// |-----------|---------------------|-------------|-------|-------|---------|---------|
-    /// | A         | [12:01,12:02,12:03] | [0,0,0]     | v1    | v1    | 12:01   | 12:03   |
-    /// | B         | [12:01,12:02,12:03] | [0,1,0]     | v2    | v2    | 12:01   | 12:03   |
-    /// | ...       |                     |             |       |       |         |         |
-    /// ```
-    Hybrid,
 }
 
 impl From<StorageFormatHint> for manifest_pb::StorageFormatHint {
@@ -289,7 +290,7 @@ impl TryFrom<manifest_pb::StorageFormatHint> for StorageFormatHint {
             manifest_pb::storage_format_hint::Hint::Specific(format) => {
                 let storage_format = manifest_pb::StorageFormat::from_i32(format)
                     .context(UnknownStorageFormatType { value: format })?;
-                StorageFormatHint::Specific(storage_format.into())
+                StorageFormatHint::Specific(storage_format.try_into()?)
             }
         };
 
@@ -312,7 +313,6 @@ impl TryFrom<&str> for StorageFormatHint {
     fn try_from(value: &str) -> Result<Self> {
         let format = match value.to_uppercase().as_str() {
             STORAGE_FORMAT_COLUMNAR => Self::Specific(StorageFormat::Columnar),
-            STORAGE_FORMAT_HYBRID => Self::Specific(StorageFormat::Hybrid),
             STORAGE_FORMAT_AUTO => Self::Auto,
             _ => return UnknownStorageFormatHint { value }.fail(),
         };
@@ -324,16 +324,17 @@ impl From<StorageFormat> for manifest_pb::StorageFormat {
     fn from(format: StorageFormat) -> Self {
         match format {
             StorageFormat::Columnar => Self::Columnar,
-            StorageFormat::Hybrid => Self::Hybrid,
         }
     }
 }
 
-impl From<manifest_pb::StorageFormat> for StorageFormat {
-    fn from(format: manifest_pb::StorageFormat) -> Self {
+impl TryFrom<manifest_pb::StorageFormat> for StorageFormat {
+    type Error = Error;
+
+    fn try_from(format: manifest_pb::StorageFormat) -> Result<Self> {
         match format {
-            manifest_pb::StorageFormat::Columnar => Self::Columnar,
-            manifest_pb::StorageFormat::Hybrid => Self::Hybrid,
+            manifest_pb::StorageFormat::Columnar => Ok(Self::Columnar),
+            manifest_pb::StorageFormat::Hybrid => HybridDeprecated {}.fail(),
         }
     }
 }
@@ -344,7 +345,6 @@ impl TryFrom<&str> for StorageFormat {
     fn try_from(value: &str) -> Result<Self> {
         let format = match value.to_uppercase().as_str() {
             STORAGE_FORMAT_COLUMNAR => Self::Columnar,
-            STORAGE_FORMAT_HYBRID => Self::Hybrid,
             _ => return UnknownStorageFormat { value }.fail(),
         };
         Ok(format)
@@ -355,7 +355,6 @@ impl ToString for StorageFormat {
     fn to_string(&self) -> String {
         match self {
             Self::Columnar => STORAGE_FORMAT_COLUMNAR,
-            Self::Hybrid => STORAGE_FORMAT_HYBRID,
         }
         .to_string()
     }
@@ -397,9 +396,16 @@ pub struct TableOptions {
     pub num_rows_per_row_group: usize,
     /// Table Compression
     pub compression: Compression,
+    /// Memtable type
+    pub memtable_type: MemtableType,
 }
 
 impl TableOptions {
+    pub fn from_map(map: &HashMap<String, String>, is_create: bool) -> Result<Self> {
+        let opt = Self::default();
+        merge_table_options(map, &opt, is_create)
+    }
+
     #[inline]
     pub fn segment_duration(&self) -> Option<Duration> {
         self.segment_duration.map(|v| v.0)
@@ -421,7 +427,7 @@ impl TableOptions {
                 SEGMENT_DURATION.to_string(),
                 self.segment_duration
                     .map(|v| v.to_string())
-                    .unwrap_or_else(String::new),
+                    .unwrap_or_default(),
             ),
             (UPDATE_MODE.to_string(), self.update_mode.to_string()),
             (ENABLE_TTL.to_string(), self.enable_ttl.to_string()),
@@ -443,6 +449,7 @@ impl TableOptions {
                 STORAGE_FORMAT.to_string(),
                 self.storage_format_hint.to_string(),
             ),
+            (MEMTABLE_TYPE.to_string(), self.memtable_type.to_string()),
         ]
         .into_iter()
         .collect();
@@ -583,6 +590,7 @@ impl From<TableOptions> for manifest_pb::TableOptions {
             storage_format_hint: Some(manifest_pb::StorageFormatHint::from(
                 opts.storage_format_hint,
             )),
+            // TODO: persist `memtable_type` in PB.
         }
     }
 }
@@ -654,6 +662,7 @@ impl TryFrom<manifest_pb::TableOptions> for TableOptions {
             write_buffer_size: opts.write_buffer_size,
             compression: Compression::from(compression),
             storage_format_hint: StorageFormatHint::try_from(storage_format_hint)?,
+            memtable_type: MemtableType::SkipList,
         };
 
         Ok(table_opts)
@@ -673,6 +682,7 @@ impl Default for TableOptions {
             write_buffer_size: DEFAULT_WRITE_BUFFER_SIZE,
             compression: Compression::Zstd,
             storage_format_hint: StorageFormatHint::default(),
+            memtable_type: MemtableType::SkipList,
         }
     }
 }
@@ -700,7 +710,11 @@ fn merge_table_options(
     let mut table_opts = table_old_opts.clone();
     if is_create {
         if let Some(v) = options.get(SEGMENT_DURATION) {
-            table_opts.segment_duration = Some(parse_duration(v).context(ParseDuration)?);
+            if v.is_empty() {
+                table_opts.segment_duration = None;
+            } else {
+                table_opts.segment_duration = Some(parse_duration(v).context(ParseDuration)?);
+            }
         }
         if let Some(v) = options.get(UPDATE_MODE) {
             table_opts.update_mode = UpdateMode::parse_from(v)?;
@@ -733,6 +747,9 @@ fn merge_table_options(
     }
     if let Some(v) = options.get(STORAGE_FORMAT) {
         table_opts.storage_format_hint = v.as_str().try_into()?;
+    }
+    if let Some(v) = options.get(MEMTABLE_TYPE) {
+        table_opts.memtable_type = MemtableType::parse_from(v);
     }
     Ok(table_opts)
 }

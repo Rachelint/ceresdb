@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Table version
 
@@ -919,9 +931,15 @@ mod tests {
 
     #[test]
     fn test_table_version_sampling() {
+        let memtable = MemTableMocker.build();
+        test_table_version_sampling_with_memtable(memtable);
+        let memtable = MemTableMocker.build_columnar();
+        test_table_version_sampling_with_memtable(memtable);
+    }
+
+    fn test_table_version_sampling_with_memtable(memtable: MemTableRef) {
         let version = new_table_version();
 
-        let memtable = MemTableMocker::default().build();
         let schema = memtable.schema().clone();
 
         let memtable_id = 1;
@@ -957,9 +975,15 @@ mod tests {
 
     #[test]
     fn test_table_version_sampling_switch() {
+        let memtable = MemTableMocker.build();
+        test_table_version_sampling_switch_with_memtable(memtable);
+        let memtable = MemTableMocker.build_columnar();
+        test_table_version_sampling_switch_with_memtable(memtable);
+    }
+
+    fn test_table_version_sampling_switch_with_memtable(memtable: MemTableRef) {
         let version = new_table_version();
 
-        let memtable = MemTableMocker::default().build();
         let schema = memtable.schema().clone();
 
         let memtable_id = 1;
@@ -998,11 +1022,12 @@ mod tests {
         check_flushable_mem_with_sampling(&flushable_mems, memtable_id);
     }
 
+    // TODO: test columnar memtable
     #[test]
     fn test_table_version_sampling_freeze() {
         let version = new_table_version();
 
-        let memtable = MemTableMocker::default().build();
+        let memtable = MemTableMocker.build();
         let schema = memtable.schema().clone();
 
         let memtable_id1 = 1;
@@ -1038,7 +1063,7 @@ mod tests {
         assert_eq!(memtable_id1, read_view.sampling_mem.as_ref().unwrap().id);
         assert!(read_view.sampling_mem.unwrap().freezed);
 
-        let memtable = MemTableMocker::default().build();
+        let memtable = MemTableMocker.build();
         let memtable_id2 = 2;
         let mem_state = MemTableState {
             mem: memtable,
@@ -1080,11 +1105,12 @@ mod tests {
         assert_eq!(memtable_id2, flushable_mems.memtables[0].id);
     }
 
+    // TODO: test columnar memtable
     #[test]
     fn test_table_version_sampling_apply_edit() {
         let version = new_table_version();
 
-        let memtable = MemTableMocker::default().build();
+        let memtable = MemTableMocker.build();
 
         let memtable_id1 = 1;
         let sampling_mem = SamplingMemTable::new(memtable, memtable_id1);
@@ -1098,7 +1124,7 @@ mod tests {
             TimeRange::bucket_of(now, table_options::DEFAULT_SEGMENT_DURATION).unwrap();
 
         // Prepare mutable memtable.
-        let memtable = MemTableMocker::default().build();
+        let memtable = MemTableMocker.build();
         let memtable_id2 = 2;
         let mem_state = MemTableState {
             mem: memtable,

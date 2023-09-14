@@ -1,11 +1,23 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Sst writer trait definition
 
 use std::cmp;
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes_ext::Bytes;
 use common_types::{
     record_batch::RecordBatchWithKey, request_id::RequestId, schema::Schema, time::TimeRange,
     SequenceNumber,
@@ -35,6 +47,18 @@ pub mod error {
 
         #[snafu(display("Failed to encode meta data, err:{}", source))]
         EncodeMetaData { source: GenericError },
+
+        #[snafu(display("Failed to encode pb data, err:{}", source))]
+        EncodePbData {
+            source: crate::sst::parquet::encoding::Error,
+        },
+
+        #[snafu(display("IO failed, file:{file}, source:{source}.\nbacktrace:\n{backtrace}",))]
+        Io {
+            file: String,
+            source: std::io::Error,
+            backtrace: Backtrace,
+        },
 
         #[snafu(display(
             "Failed to encode record batch into sst, err:{}.\nBacktrace:\n{}",
@@ -68,11 +92,12 @@ pub type RecordBatchStreamItem = std::result::Result<RecordBatchWithKey, Generic
 // TODO(yingwen): SstReader also has a RecordBatchStream, can we use same type?
 pub type RecordBatchStream = Box<dyn Stream<Item = RecordBatchStreamItem> + Send + Unpin>;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct SstInfo {
     pub file_size: usize,
     pub row_num: usize,
     pub storage_format: StorageFormat,
+    pub meta_path: String,
 }
 
 #[derive(Debug, Clone)]

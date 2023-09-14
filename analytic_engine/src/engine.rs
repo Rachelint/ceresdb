@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Implements the TableEngine trait
 
@@ -10,9 +22,9 @@ use log::{error, info};
 use snafu::{OptionExt, ResultExt};
 use table_engine::{
     engine::{
-        Close, CloseShardRequest, CloseTableRequest, CreateTableRequest, DropTableRequest,
-        OpenShard, OpenShardRequest, OpenShardResult, OpenTableNoCause, OpenTableRequest,
-        OpenTableWithCause, Result, TableDef, TableEngine,
+        Close, CloseShardRequest, CloseTableRequest, CreateTableParams, CreateTableRequest,
+        DropTableRequest, OpenShard, OpenShardRequest, OpenShardResult, OpenTableNoCause,
+        OpenTableRequest, OpenTableWithCause, Result, TableDef, TableEngine,
     },
     table::{SchemaId, TableRef},
     ANALYTIC_ENGINE_TYPE,
@@ -84,6 +96,12 @@ impl TableEngine for TableEngineImpl {
         self.instance.close().await.box_err().context(Close)?;
 
         info!("Table engine closed");
+
+        Ok(())
+    }
+
+    async fn validate_create_table(&self, params: &CreateTableParams) -> Result<()> {
+        self.instance.validate_create_table(params)?;
 
         Ok(())
     }

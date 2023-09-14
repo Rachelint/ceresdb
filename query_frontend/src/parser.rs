@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! SQL parser
 //!
@@ -21,8 +33,8 @@ use table_engine::ANALYTIC_ENGINE_TYPE;
 use crate::{
     ast::{
         AlterAddColumn, AlterModifySetting, CreateTable, DescribeTable, DropTable, ExistsTable,
-        HashPartition, KeyPartition, Partition, ShowCreate, ShowCreateObject, ShowTables,
-        Statement,
+        HashPartition, KeyPartition, Partition, RandomPartition, ShowCreate, ShowCreateObject,
+        ShowTables, Statement,
     },
     partition,
 };
@@ -320,8 +332,8 @@ impl<'a> Parser<'a> {
         let table_name = self.parser.parse_object_name()?.into();
         let (columns, constraints) = self.parse_columns()?;
 
-        // PARTITION BY...
-        let partition = self.maybe_parse_and_check_partition(Keyword::PARTITION, &columns)?;
+        // Parse the partition clause, starting with `PARTITION BY ...`
+        let partition = self.maybe_parse_partition(Keyword::PARTITION, &columns)?;
 
         // ENGINE = ...
         let engine = self.parse_table_engine()?;
@@ -550,7 +562,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn maybe_parse_and_check_partition(
+    fn maybe_parse_partition(
         &mut self,
         keyword: Keyword,
         columns: &[ColumnDef],
@@ -569,6 +581,10 @@ impl<'a> Parser<'a> {
         &mut self,
         columns: &[ColumnDef],
     ) -> Result<Option<Partition>> {
+        if let Some(key) = self.maybe_parse_and_check_random_partition()? {
+            return Ok(Some(Partition::Random(key)));
+        }
+
         if let Some(key) = self.maybe_parse_and_check_key_partition(columns)? {
             return Ok(Some(Partition::Key(key)));
         }
@@ -577,6 +593,16 @@ impl<'a> Parser<'a> {
         }
 
         Ok(None)
+    }
+
+    fn maybe_parse_and_check_random_partition(&mut self) -> Result<Option<RandomPartition>> {
+        if !self.consume_token("RANDOM") {
+            return Ok(None);
+        }
+
+        // Parse the clause `PARTITIONS ...`.
+        let partition_num = self.parse_partition_num()?.unwrap_or(1);
+        Ok(Some(RandomPartition { partition_num }))
     }
 
     fn maybe_parse_and_check_hash_partition(
@@ -595,7 +621,7 @@ impl<'a> Parser<'a> {
         // TODO: support all valid exprs not only column expr.
         let expr = self.parse_and_check_expr_in_hash(columns)?;
 
-        let partition_num = self.parse_partition_num()?;
+        let partition_num = self.parse_partition_num()?.unwrap_or(1);
 
         // Parse successfully.
         Ok(Some(HashPartition {
@@ -654,7 +680,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let partition_num = self.parse_partition_num()?;
+        let partition_num = self.parse_partition_num()?.unwrap_or(1);
         let partition_key = key_columns.into_iter().map(|v| v.value).collect();
 
         // Parse successfully.
@@ -665,8 +691,10 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    // Parse second part: "PARTITIONS num" (if not set, num will use 1 as default).
-    fn parse_partition_num(&mut self) -> Result<u64> {
+    // Parse second part: "PARTITIONS num".
+    //
+    // If not found, return `Ok(None)`.
+    fn parse_partition_num(&mut self) -> Result<Option<u64>> {
         let partition_num = if self.parser.parse_keyword(Keyword::PARTITIONS) {
             match self.parser.parse_number_value()? {
                 sqlparser::ast::Value::Number(v, _) => match v.parse::<u64>() {
@@ -678,7 +706,7 @@ impl<'a> Parser<'a> {
                 v => return parser_err!(format!("expect partition number, found:{v}")),
             }
         } else {
-            1
+            return Ok(None);
         };
 
         if partition_num > partition::MAX_PARTITION_NUM {
@@ -687,7 +715,7 @@ impl<'a> Parser<'a> {
                 partition::MAX_PARTITION_NUM, partition_num
             ))
         } else {
-            Ok(partition_num)
+            Ok(Some(partition_num))
         }
     }
 

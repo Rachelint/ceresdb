@@ -1,7 +1,19 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! hotspot recorder
-use std::{fmt::Write, sync::Arc, time::Duration};
+use std::{fmt::Write, sync::Arc};
 
 use ceresdbproto::storage::{
     PrometheusQueryRequest, RequestContext, SqlQueryRequest, WriteRequest,
@@ -10,6 +22,7 @@ use log::{info, warn};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use spin::Mutex as SpinMutex;
+use time_ext::ReadableDuration;
 use timed_task::TimedTask;
 use tokio::sync::mpsc::{self, Sender};
 
@@ -18,7 +31,7 @@ use crate::{hotspot_lru::HotspotLru, util};
 type QueryKey = String;
 type WriteKey = String;
 const TAG: &str = "hotspot autodump";
-const RECODER_CHANNEL_CAP: usize = 64 * 1024;
+const RECORDER_CHANNEL_CAP: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -27,10 +40,12 @@ pub struct Config {
     query_cap: Option<usize>,
     /// Max items size for write hotspot
     write_cap: Option<usize>,
-    dump_interval: Duration,
-    auto_dump_interval: bool,
-    /// Max items for dump hotspot
-    auto_dump_len: usize,
+    /// The hotspot records will be auto dumped if set.
+    enable_auto_dump: bool,
+    /// The interval between two auto dumps
+    auto_dump_interval: ReadableDuration,
+    /// The number of items for auto dump
+    auto_dump_num_items: usize,
 }
 
 impl Default for Config {
@@ -38,14 +53,14 @@ impl Default for Config {
         Self {
             query_cap: Some(10_000),
             write_cap: Some(10_000),
-            dump_interval: Duration::from_secs(5),
-            auto_dump_interval: true,
-            auto_dump_len: 10,
+            auto_dump_interval: ReadableDuration::minutes(1),
+            enable_auto_dump: true,
+            auto_dump_num_items: 10,
         }
     }
 }
 
-enum Message {
+pub enum Message {
     Query(QueryKey),
     Write {
         key: WriteKey,
@@ -117,6 +132,7 @@ pub struct Dump {
     pub write_field_hots: Vec<String>,
 }
 
+// TODO: move HotspotRecorder to components dir for reuse.
 impl HotspotRecorder {
     pub fn new(config: Config, runtime: Arc<Runtime>) -> Self {
         let hotspot_query = Self::init_lru(config.query_cap);
@@ -129,9 +145,9 @@ impl HotspotRecorder {
             hotspot_field_write: hotspot_field_write.clone(),
         };
 
-        let task_handle = if config.auto_dump_interval {
-            let interval = config.dump_interval;
-            let dump_len = config.auto_dump_len;
+        let task_handle = if config.enable_auto_dump {
+            let interval = config.auto_dump_interval;
+            let dump_len = config.auto_dump_num_items;
             let stat_clone = stat.clone();
             let builder = move || {
                 let stat_in_builder = stat_clone.clone();
@@ -160,14 +176,14 @@ impl HotspotRecorder {
             Some(TimedTask::start_timed_task(
                 String::from("hotspot_dump"),
                 &runtime,
-                interval,
+                interval.0,
                 builder,
             ))
         } else {
             None
         };
 
-        let (tx, mut rx) = mpsc::channel(RECODER_CHANNEL_CAP);
+        let (tx, mut rx) = mpsc::channel(RECORDER_CHANNEL_CAP);
         runtime.spawn(async move {
             loop {
                 match rx.recv().await {
@@ -287,7 +303,7 @@ impl HotspotRecorder {
         }
     }
 
-    async fn send_msg_or_log(&self, method: &str, msg: Message) {
+    pub async fn send_msg_or_log(&self, method: &str, msg: Message) {
         if let Err(e) = self.tx.send(msg).await {
             warn!(
                 "HotspotRecoder::{} fail to send \
@@ -300,7 +316,7 @@ impl HotspotRecorder {
 
 #[cfg(test)]
 mod test {
-    use std::thread;
+    use std::{thread, time::Duration};
 
     use ceresdbproto::{
         storage,
@@ -335,9 +351,9 @@ mod test {
             let options = Config {
                 query_cap: read_cap,
                 write_cap,
-                auto_dump_interval: false,
-                dump_interval: Duration::from_millis(5000),
-                auto_dump_len: 10,
+                enable_auto_dump: false,
+                auto_dump_interval: ReadableDuration::millis(5000),
+                auto_dump_num_items: 10,
             };
             let recorder = HotspotRecorder::new(options, runtime.clone());
             assert!(recorder.stat.pop_read_hots().unwrap().is_empty());
@@ -371,9 +387,9 @@ mod test {
             let options = Config {
                 query_cap: read_cap,
                 write_cap,
-                auto_dump_interval: false,
-                dump_interval: Duration::from_millis(5000),
-                auto_dump_len: 10,
+                enable_auto_dump: false,
+                auto_dump_interval: ReadableDuration::millis(5000),
+                auto_dump_num_items: 10,
             };
 
             let recorder = HotspotRecorder::new(options, runtime.clone());

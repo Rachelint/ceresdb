@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::{
     sync::{Arc, Mutex, RwLock},
@@ -102,7 +114,7 @@ impl ClusterImpl {
             loop {
                 let shard_infos = inner
                     .shard_set
-                    .all_opened_shards()
+                    .all_shards()
                     .iter()
                     .map(|shard| shard.shard_info())
                     .collect();
@@ -280,7 +292,11 @@ impl Inner {
 
         let shard_id = tables_of_shard.shard_info.id;
         let shard = Arc::new(Shard::new(tables_of_shard));
-        self.shard_set.insert(shard_id, shard.clone());
+
+        info!("Insert shard to shard_set, id:{shard_id}, shard:{shard:?}");
+        if let Some(old_shard) = self.shard_set.insert(shard_id, shard.clone()) {
+            info!("Remove old shard, id:{shard_id}, old:{old_shard:?}");
+        }
 
         Ok(shard)
     }
@@ -290,6 +306,7 @@ impl Inner {
     }
 
     fn close_shard(&self, shard_id: ShardId) -> Result<ShardRef> {
+        info!("Remove shard from shard_set, id:{shard_id}");
         self.shard_set
             .remove(shard_id)
             .with_context(|| ShardNotFound {

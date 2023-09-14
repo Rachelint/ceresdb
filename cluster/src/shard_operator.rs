@@ -1,4 +1,16 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::collections::HashMap;
 
@@ -13,7 +25,7 @@ use generic_error::BoxError;
 use log::info;
 use snafu::ResultExt;
 use table_engine::{
-    engine::{TableEngineRef, TableState},
+    engine::{CreateTableParams, TableEngineRef, TableState},
     table::TableId,
 };
 
@@ -232,17 +244,20 @@ impl ShardOperator {
         };
 
         // Build create table request and options.
-        let create_table_request = CreateTableRequest {
+        let params = CreateTableParams {
             catalog_name: ctx.catalog,
             schema_name: table_info.schema_name.clone(),
             table_name: table_info.name.clone(),
-            table_id: Some(TableId::new(table_info.id)),
             table_schema: ctx.table_schema,
             engine: ctx.engine,
-            options: ctx.options,
+            table_options: ctx.options,
+            partition_info,
+        };
+        let create_table_request = CreateTableRequest {
+            params,
+            table_id: Some(TableId::new(table_info.id)),
             state: TableState::Stable,
             shard_id: shard_info.id,
-            partition_info,
         };
 
         let create_opts = CreateOptions {

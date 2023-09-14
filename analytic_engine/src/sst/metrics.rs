@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use lazy_static::lazy_static;
 use prometheus::{exponential_buckets, register_counter, register_histogram, Counter, Histogram};
@@ -22,13 +34,13 @@ lazy_static! {
         "Counter for row group cache miss"
     ).unwrap();
 
-    pub static ref SST_META_CACHE_HIT_COUNT: Counter = register_counter!(
-        "sst_meta_cache_hit_count",
-        "Counter for sst meta cache hit"
+    pub static ref META_DATA_CACHE_HIT_COUNTER: Counter = register_counter!(
+        "META_DATA_CACHE_HIT",
+        "The counter for meta data cache hit"
     ).unwrap();
 
-    pub static ref SST_META_CACHE_MISS_COUNT: Counter = register_counter!(
-        "sst_meta_cache_miss_count",
-        "Counter for sst meta cache miss"
+    pub static ref META_DATA_CACHE_MISS_COUNTER: Counter = register_counter!(
+        "META_DATA_CACHE_MISS",
+        "The counter for meta data cache miss"
     ).unwrap();
 }

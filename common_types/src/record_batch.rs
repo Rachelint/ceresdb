@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Record batch
 
@@ -15,7 +27,7 @@ use arrow_ext::operation;
 use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
 
 use crate::{
-    column::{cast_nanosecond_to_mills, ColumnBlock, ColumnBlockBuilder},
+    column_block::{cast_nanosecond_to_mills, ColumnBlock, ColumnBlockBuilder},
     datum::DatumKind,
     projected_schema::{ProjectedSchema, RowProjector},
     row::{
@@ -31,7 +43,7 @@ pub enum Error {
     SchemaLen { backtrace: Backtrace },
 
     #[snafu(display("Failed to create column block, err:{}", source))]
-    CreateColumnBlock { source: crate::column::Error },
+    CreateColumnBlock { source: crate::column_block::Error },
 
     #[snafu(display(
         "Failed to create arrow record batch, err:{}.\nBacktrace:\n{}",
@@ -47,7 +59,7 @@ pub enum Error {
     IterateDatum { source: crate::row::Error },
 
     #[snafu(display("Failed to append datum, err:{}", source))]
-    AppendDatum { source: crate::column::Error },
+    AppendDatum { source: crate::column_block::Error },
 
     #[snafu(display(
         "Column not in schema with key, column_name:{}.\nBacktrace:\n{}",
@@ -102,7 +114,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordBatchData {
     arrow_record_batch: ArrowRecordBatch,
     column_blocks: Vec<ColumnBlock>,
@@ -192,7 +204,7 @@ impl TryFrom<ArrowRecordBatch> for RecordBatchData {
 
 // TODO(yingwen): The schema in RecordBatch should be much simple because it may
 // lack some information.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordBatch {
     schema: RecordSchema,
     data: RecordBatchData,

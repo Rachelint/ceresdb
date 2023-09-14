@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Utils to create table.
 
@@ -17,9 +29,9 @@ use common_types::{
 };
 use table_engine::{
     self,
-    engine::{CreateTableRequest, TableState},
+    engine::{CreateTableParams, CreateTableRequest, TableState},
     predicate::Predicate,
-    table::{GetRequest, ReadOptions, ReadOrder, ReadRequest, SchemaId, TableId, TableSeq},
+    table::{GetRequest, ReadOptions, ReadRequest, SchemaId, TableId, TableSeq},
 };
 use time_ext::ReadableDuration;
 use trace_metric::MetricsCollector;
@@ -110,7 +122,7 @@ impl FixedSchemaTable {
     }
 
     fn new_row_group(&self, rows: Vec<Row>) -> RowGroup {
-        RowGroupBuilder::with_rows(self.create_request.table_schema.clone(), rows)
+        RowGroupBuilder::with_rows(self.create_request.params.table_schema.clone(), rows)
             .unwrap()
             .build()
     }
@@ -119,8 +131,8 @@ impl FixedSchemaTable {
         row_util::new_row_6(data)
     }
 
-    pub fn new_read_all_request(&self, opts: ReadOptions, read_order: ReadOrder) -> ReadRequest {
-        new_read_all_request_with_order(self.create_request.table_schema.clone(), opts, read_order)
+    pub fn new_read_all_request(&self, opts: ReadOptions) -> ReadRequest {
+        new_read_all_request_with_order(self.create_request.params.table_schema.clone(), opts)
     }
 
     pub fn new_get_request(&self, key: KeyTuple) -> GetRequest {
@@ -129,7 +141,7 @@ impl FixedSchemaTable {
         GetRequest {
             request_id: RequestId::next_id(),
             projected_schema: ProjectedSchema::no_projection(
-                self.create_request.table_schema.clone(),
+                self.create_request.params.table_schema.clone(),
             ),
             primary_key,
         }
@@ -175,23 +187,18 @@ pub fn read_opts_list() -> Vec<ReadOptions> {
     ]
 }
 
-pub fn new_read_all_request_with_order(
-    schema: Schema,
-    opts: ReadOptions,
-    order: ReadOrder,
-) -> ReadRequest {
+pub fn new_read_all_request_with_order(schema: Schema, opts: ReadOptions) -> ReadRequest {
     ReadRequest {
         request_id: RequestId::next_id(),
         opts,
         projected_schema: ProjectedSchema::no_projection(schema),
         predicate: Arc::new(Predicate::empty()),
-        order,
         metrics_collector: MetricsCollector::default(),
     }
 }
 
 pub fn new_read_all_request(schema: Schema, opts: ReadOptions) -> ReadRequest {
-    new_read_all_request_with_order(schema, opts, ReadOrder::None)
+    new_read_all_request_with_order(schema, opts)
 }
 
 pub fn assert_batch_eq_to_row_group(record_batches: &[RecordBatch], row_group: &RowGroup) {
@@ -207,7 +214,6 @@ pub fn assert_batch_eq_to_row_group(record_batches: &[RecordBatch], row_group: &
     }
 
     let mut cursor = RecordBatchesCursor::new(record_batches);
-
     for row in row_group.iter() {
         for (column_idx, datum) in row.iter().enumerate() {
             assert_eq!(
@@ -266,7 +272,7 @@ impl Builder {
     }
 
     pub fn table_name(mut self, table_name: String) -> Self {
-        self.create_request.table_name = table_name;
+        self.create_request.params.table_name = table_name;
         self
     }
 
@@ -276,7 +282,7 @@ impl Builder {
     }
 
     pub fn enable_ttl(mut self, enable_ttl: bool) -> Self {
-        self.create_request.options.insert(
+        self.create_request.params.table_options.insert(
             common_types::OPTION_KEY_ENABLE_TTL.to_string(),
             enable_ttl.to_string(),
         );
@@ -285,7 +291,8 @@ impl Builder {
 
     pub fn ttl(mut self, duration: ReadableDuration) -> Self {
         self.create_request
-            .options
+            .params
+            .table_options
             .insert(common_types::TTL.to_string(), duration.to_string());
         self
     }
@@ -299,17 +306,21 @@ impl Builder {
 
 impl Default for Builder {
     fn default() -> Self {
+        let params = CreateTableParams {
+            catalog_name: "ceresdb".to_string(),
+            schema_name: "public".to_string(),
+            table_name: "test_table".to_string(),
+            table_schema: FixedSchemaTable::default_schema(),
+            partition_info: None,
+            engine: table_engine::ANALYTIC_ENGINE_TYPE.to_string(),
+            table_options: HashMap::new(),
+        };
+
         Self {
             create_request: CreateTableRequest {
-                catalog_name: "ceresdb".to_string(),
-                schema_name: "public".to_string(),
+                params,
                 schema_id: SchemaId::from_u32(2),
                 table_id: new_table_id(2, 1),
-                table_name: "test_table".to_string(),
-                table_schema: FixedSchemaTable::default_schema(),
-                partition_info: None,
-                engine: table_engine::ANALYTIC_ENGINE_TYPE.to_string(),
-                options: HashMap::new(),
                 state: TableState::Stable,
                 shard_id: DEFAULT_SHARD_ID,
             },

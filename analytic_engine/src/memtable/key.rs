@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Memtable key
 //!
@@ -12,14 +24,9 @@
 
 use std::mem;
 
-use bytes::BufMut;
+use bytes_ext::{BufMut, BytesMut, SafeBuf, SafeBufMut};
 use codec::{memcomparable::MemComparable, Decoder, Encoder};
-use common_types::{
-    bytes::{BytesMut, SafeBuf, SafeBufMut},
-    row::Row,
-    schema::Schema,
-    SequenceNumber,
-};
+use common_types::{row::Row, schema::Schema, SequenceNumber};
 use macros::define_result;
 use snafu::{ensure, Backtrace, ResultExt, Snafu};
 
@@ -29,19 +36,19 @@ pub enum Error {
     EncodeKeyDatum { source: codec::memcomparable::Error },
 
     #[snafu(display("Failed to encode sequence, err:{}", source))]
-    EncodeSequence { source: common_types::bytes::Error },
+    EncodeSequence { source: bytes_ext::Error },
 
     #[snafu(display("Failed to encode row index, err:{}", source))]
-    EncodeIndex { source: common_types::bytes::Error },
+    EncodeIndex { source: bytes_ext::Error },
 
     #[snafu(display("Failed to decode sequence, err:{}", source))]
-    DecodeSequence { source: common_types::bytes::Error },
+    DecodeSequence { source: bytes_ext::Error },
 
     #[snafu(display("Failed to decode row index, err:{}", source))]
-    DecodeIndex { source: common_types::bytes::Error },
+    DecodeIndex { source: bytes_ext::Error },
 
     #[snafu(display(
-        "Insufficent internal key length, len:{}.\nBacktrace:\n{}",
+        "Insufficient internal key length, len:{}.\nBacktrace:\n{}",
         len,
         backtrace
     ))]
@@ -137,7 +144,7 @@ impl<'a> Encoder<Row> for ComparableInternalKey<'a> {
     }
 }
 
-struct SequenceCodec;
+pub struct SequenceCodec;
 
 impl Encoder<KeySequence> for SequenceCodec {
     type Error = Error;

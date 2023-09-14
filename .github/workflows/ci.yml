@@ -1,4 +1,16 @@
-# Copyright 2022 CeresDB Project Authors. Licensed under Apache-2.0.
+# Copyright 2023 The CeresDB Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 name: CI
 
@@ -30,7 +42,7 @@ env:
   CERESMETA_IMAGE_NAME: ceresdb/ceresmeta-server:latest
   CERESDB_IMAGE_NAME: ceresdb/ceresdb-server:latest
   LOCK_FILE: Cargo.lock
-  RUST_VERSION: nightly-2023-02-02
+  RUST_VERSION: nightly-2023-08-28
 
 jobs:
   style-check:
@@ -48,6 +60,8 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android # release about 10 GB
           sudo rm -rf /usr/share/dotnet # release about 20GB
+      - name: Check License Header
+        uses: korandoru/hawkeye@v3
       - name: Cache Rust Dependencies
         uses: actions/cache@v3
         with:
@@ -73,7 +87,6 @@ jobs:
           cargo install cargo-sort
       - name: Run Style Check
         run: |
-          make check-license
           make clippy
           make fmt
           make check-cargo-toml
@@ -163,7 +176,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: CI-${{ github.head_ref }}.${{ github.sha }}
+          name: CI-${{ github.sha }}
           path: |
             /tmp/ceresdb-stdout.log
             /tmp/ceresmeta.log
@@ -221,6 +234,10 @@ jobs:
         working-directory: integration_tests
         run: |
           make run-mysql
+      - name: Run PostgreSQL client tests
+        working-directory: integration_tests
+        run: |
+          make run-postgresql
       - name: Run Prometheus query tests
         working-directory: integration_tests
         run: |
@@ -233,7 +250,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: sdk-test-${{ github.head_ref }}.${{ github.sha }}
+          name: sdk-test-${{ github.sha }}
           path: |
             /tmp/ceresdb-stdout.log
 
@@ -275,6 +292,48 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: recovery-test-${{ github.head_ref }}.${{ github.sha }}
+          name: recovery-test-${{ github.sha }}
+          path: |
+            /tmp/ceresdb-stdout.log
+
+  dist-query-test:
+    name: dist-query-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Cache Rust Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo
+            ./target
+          key: debug-${{ runner.os }}-${{ hashFiles('rust-toolchain') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            debug-${{ runner.os }}-${{ hashFiles('rust-toolchain') }}-
+            debug-${{ runner.os }}-
+            debug-
+      - run: |
+          rustup set auto-self-update disable
+          rustup toolchain install ${RUST_VERSION} --profile minimal
+      - name: Release Disk Quota
+        run: |
+          sudo rm -rf /usr/local/lib/android # release about 10 GB
+          sudo rm -rf /usr/share/dotnet # release about 20GB
+      - name: Setup Build Environment
+        run: |
+          sudo apt update
+          sudo apt install --yes protobuf-compiler
+      - name: Run dist query tests
+        working-directory: integration_tests
+        run: |
+          make run-dist-query
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dist-query-test-${{ github.sha }}
           path: |
             /tmp/ceresdb-stdout.log

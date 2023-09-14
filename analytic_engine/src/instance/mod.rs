@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! A table engine instance
 //!
@@ -120,6 +132,13 @@ impl SpaceStore {
     fn find_maximum_memory_usage_space(&self) -> Option<SpaceRef> {
         let spaces = self.spaces.read().unwrap().list_all_spaces();
         spaces.into_iter().max_by_key(|t| t.memtable_memory_usage())
+    }
+
+    /// The memory space used by all tables in the space.
+    #[inline]
+    fn total_memory_usage_space(&self) -> usize {
+        let spaces = self.spaces.read().unwrap().list_all_spaces();
+        spaces.into_iter().map(|t| t.memtable_memory_usage()).sum()
     }
 }
 
@@ -256,7 +275,7 @@ impl Instance {
     #[inline]
     fn should_flush_instance(&self) -> bool {
         self.db_write_buffer_size > 0
-            && self.mem_usage_collector.total_memory_allocated() >= self.db_write_buffer_size
+            && self.space_store.total_memory_usage_space() >= self.db_write_buffer_size
     }
 
     #[inline]

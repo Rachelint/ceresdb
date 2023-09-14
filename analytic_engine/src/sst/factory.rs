@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Factory for different kinds sst writer and reader.
 
@@ -121,7 +133,6 @@ impl Default for ScanOptions {
 
 #[derive(Debug, Clone)]
 pub struct SstReadOptions {
-    pub reverse: bool,
     pub frequency: ReadFrequency,
     pub num_rows_per_row_group: usize,
     pub projected_schema: ProjectedSchema,
@@ -173,7 +184,7 @@ impl Factory for FactoryImpl {
         };
 
         match storage_format {
-            StorageFormat::Columnar | StorageFormat::Hybrid => {
+            StorageFormat::Columnar => {
                 let reader = AsyncParquetReader::new(
                     file_id,
                     path,
@@ -201,16 +212,9 @@ impl Factory for FactoryImpl {
         store_picker: &'a ObjectStorePickerRef,
         level: Level,
     ) -> Result<Box<dyn SstWriter + Send + 'a>> {
-        let hybrid_encoding = match options.storage_format_hint {
-            StorageFormatHint::Specific(format) => matches!(format, StorageFormat::Hybrid),
-            // `Auto` is mapped to columnar parquet format now, may change in future.
-            StorageFormatHint::Auto => false,
-        };
-
         Ok(Box::new(ParquetSstWriter::new(
             path,
             level,
-            hybrid_encoding,
             store_picker,
             options,
         )))

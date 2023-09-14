@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Wal based on message queue
 
@@ -14,8 +26,8 @@ use snafu::ResultExt;
 use crate::{
     log_batch::{LogEntry, LogWriteBatch},
     manager::{
-        error::*, AsyncLogIterator, BatchLogIteratorAdapter, ReadContext, ReadRequest, RegionId,
-        ScanContext, ScanRequest, WalLocation, WalManager, WriteContext,
+        self, error::*, AsyncLogIterator, BatchLogIteratorAdapter, ReadContext, ReadRequest,
+        RegionId, ScanContext, ScanRequest, WalLocation, WalManager, WriteContext,
     },
     message_queue_impl::{
         config::Config,
@@ -93,7 +105,15 @@ impl<M: MessageQueue> WalManager for MessageQueueImpl<M> {
     }
 
     async fn write(&self, ctx: &WriteContext, batch: &LogWriteBatch) -> Result<SequenceNumber> {
+        manager::collect_write_log_metrics(batch);
         self.0.write(ctx, batch).await.box_err().context(Write)
+    }
+
+    async fn get_statistics(&self) -> Option<String> {
+        let wal_stats = self.0.get_statistics().await;
+        let stats = format!("#MessageQueueWal stats:\n{wal_stats}\n");
+
+        Some(stats)
     }
 }
 

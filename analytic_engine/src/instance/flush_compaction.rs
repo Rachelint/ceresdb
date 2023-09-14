@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // Flush and compaction logic of instance
 
@@ -484,7 +496,6 @@ impl FlushTask {
                 .context(AllocFileId)?;
 
             let sst_file_path = self.table_data.set_sst_file_path(file_id);
-
             // TODO: `min_key` & `max_key` should be figured out when writing sst.
             let sst_meta = MetaData {
                 min_key: min_key.clone(),
@@ -571,6 +582,7 @@ impl FlushTask {
                     time_range: sst_meta.time_range,
                     max_seq: sst_meta.max_sequence,
                     storage_format: sst_info.storage_format,
+                    associated_files: vec![sst_info.meta_path],
                 },
             })
         }
@@ -609,7 +621,6 @@ impl FlushTask {
             .context(AllocFileId)?;
 
         let sst_file_path = self.table_data.set_sst_file_path(file_id);
-
         let storage_format_hint = self.table_data.table_options().storage_format_hint;
         let sst_write_options = SstWriteOptions {
             storage_format_hint,
@@ -653,6 +664,7 @@ impl FlushTask {
             time_range: memtable_state.time_range,
             max_seq: memtable_state.last_sequence(),
             storage_format: sst_info.storage_format,
+            associated_files: vec![sst_info.meta_path],
         }))
     }
 }
@@ -711,6 +723,16 @@ impl SpaceStore {
                 &mut edit_meta,
             )
             .await?;
+        }
+
+        if !table_data.allow_compaction() {
+            return Other {
+                msg: format!(
+                    "Table status is not ok, unable to update manifest, table:{}, table_id:{}",
+                    table_data.name, table_data.id
+                ),
+            }
+            .fail();
         }
 
         let edit_req = {
@@ -776,7 +798,6 @@ impl SpaceStore {
         let table_options = table_data.table_options();
         let projected_schema = ProjectedSchema::no_projection(schema.clone());
         let sst_read_options = SstReadOptions {
-            reverse: false,
             num_rows_per_row_group: table_options.num_rows_per_row_group,
             frequency: ReadFrequency::Once,
             projected_schema: projected_schema.clone(),
@@ -840,6 +861,7 @@ impl SpaceStore {
                 .fetch_metas(&input.files)
                 .await
                 .context(ReadSstMeta)?;
+
             MetaData::merge(sst_metas.into_iter().map(MetaData::from), schema)
         };
 
@@ -850,7 +872,6 @@ impl SpaceStore {
             .context(AllocFileId)?;
 
         let sst_file_path = table_data.set_sst_file_path(file_id);
-
         let mut sst_writer = self
             .sst_factory
             .create_writer(
@@ -915,6 +936,7 @@ impl SpaceStore {
                 max_seq: sst_meta.max_sequence,
                 time_range: sst_meta.time_range,
                 storage_format: sst_info.storage_format,
+                associated_files: vec![sst_info.meta_path],
             },
         });
 

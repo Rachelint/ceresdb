@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Metrics of table.
 
@@ -33,6 +45,12 @@ lazy_static! {
         "table_write_batch_size",
         "Histogram of write batch size",
         vec![10.0, 50.0, 100.0, 500.0, 1000.0, 5000.0]
+    )
+    .unwrap();
+
+    static ref TABLE_WRITE_FIELDS_COUNTER: IntCounter = register_int_counter!(
+        "table_write_fields_counter",
+        "Fields counter of table write"
     )
     .unwrap();
 
@@ -196,8 +214,9 @@ impl Metrics {
     }
 
     #[inline]
-    pub fn on_write_request_done(&self, num_rows: usize) {
+    pub fn on_write_request_done(&self, num_rows: usize, num_columns: usize) {
         TABLE_WRITE_BATCH_HISTOGRAM.observe(num_rows as f64);
+        TABLE_WRITE_FIELDS_COUNTER.inc_by((num_columns * num_rows) as u64);
     }
 
     #[inline]

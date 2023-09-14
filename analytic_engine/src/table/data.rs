@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Table data
 
@@ -9,7 +21,7 @@ use std::{
     fmt::Formatter,
     num::NonZeroUsize,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -39,8 +51,10 @@ use crate::{
         ManifestRef,
     },
     memtable::{
+        columnar::factory::ColumnarMemTableFactory,
         factory::{FactoryRef as MemTableFactoryRef, Options as MemTableOptions},
         skiplist::factory::SkiplistMemTableFactory,
+        MemtableType,
     },
     space::SpaceId,
     sst::{file::FilePurger, manager::FileId},
@@ -97,6 +111,28 @@ impl TableShardInfo {
     }
 }
 
+/// `atomic_enum` macro will expand method like
+/// ```text
+/// compare_exchange(..) -> Result<TableStatus, TableStatus>
+/// ```
+/// The result type is conflict with outer
+/// Result, so add this hack
+// TODO: fix this in atomic_enum crate.
+mod hack {
+    use atomic_enum::atomic_enum;
+
+    #[atomic_enum]
+    #[derive(PartialEq)]
+    pub enum TableStatus {
+        Ok = 0,
+        Closed,
+        /// No write/alter are allowed after table is dropped.
+        Dropped,
+    }
+}
+
+use self::hack::{AtomicTableStatus, TableStatus};
+
 /// Data of a table
 pub struct TableData {
     /// Id of this table
@@ -147,10 +183,8 @@ pub struct TableData {
     /// Not persist, used to determine if this table should flush.
     last_flush_time_ms: AtomicU64,
 
-    /// Flag denoting whether the table is dropped
-    ///
-    /// No write/alter is allowed if the table is dropped.
-    dropped: AtomicBool,
+    /// Table Status
+    status: AtomicTableStatus,
 
     /// Manifest updates after last snapshot
     manifest_updates: AtomicUsize,
@@ -178,7 +212,7 @@ impl fmt::Debug for TableData {
             .field("opts", &self.opts)
             .field("last_sequence", &self.last_sequence)
             .field("last_memtable_id", &self.last_memtable_id)
-            .field("dropped", &self.dropped.load(Ordering::Relaxed))
+            .field("status", &self.status.load(Ordering::Relaxed))
             .field("shard_info", &self.shard_info)
             .finish()
     }
@@ -223,7 +257,11 @@ impl TableData {
         // FIXME(yingwen): Validate TableOptions, such as bucket_duration >=
         // segment_duration and bucket_duration is aligned to segment_duration
 
-        let memtable_factory = Arc::new(SkiplistMemTableFactory);
+        let memtable_factory: MemTableFactoryRef = match table_opts.memtable_type {
+            MemtableType::SkipList => Arc::new(SkiplistMemTableFactory),
+            MemtableType::Columnar => Arc::new(ColumnarMemTableFactory),
+        };
+
         let purge_queue = purger.create_purge_queue(space_id, table_id);
         let current_version = TableVersion::new(purge_queue);
         let metrics = Metrics::default();
@@ -247,7 +285,7 @@ impl TableData {
             last_memtable_id: AtomicU64::new(0),
             allocator: IdAllocator::new(0, 0, DEFAULT_ALLOC_STEP),
             last_flush_time_ms: AtomicU64::new(0),
-            dropped: AtomicBool::new(false),
+            status: TableStatus::Ok.into(),
             metrics,
             shard_info: TableShardInfo::new(shard_id),
             serial_exec: tokio::sync::Mutex::new(TableOpSerialExecutor::new(table_id)),
@@ -292,7 +330,7 @@ impl TableData {
             last_memtable_id: AtomicU64::new(0),
             allocator,
             last_flush_time_ms: AtomicU64::new(0),
-            dropped: AtomicBool::new(false),
+            status: TableStatus::Ok.into(),
             metrics,
             shard_info: TableShardInfo::new(shard_id),
             serial_exec: tokio::sync::Mutex::new(TableOpSerialExecutor::new(add_meta.table_id)),
@@ -364,13 +402,26 @@ impl TableData {
 
     #[inline]
     pub fn is_dropped(&self) -> bool {
-        self.dropped.load(Ordering::SeqCst)
+        self.status.load(Ordering::SeqCst) == TableStatus::Dropped
     }
 
     /// Set the table is dropped and forbid any writes/alter on this table.
     #[inline]
     pub fn set_dropped(&self) {
-        self.dropped.store(true, Ordering::SeqCst);
+        self.status.store(TableStatus::Dropped, Ordering::SeqCst)
+    }
+
+    #[inline]
+    pub fn set_closed(&self) {
+        self.status.store(TableStatus::Closed, Ordering::SeqCst)
+    }
+
+    #[inline]
+    pub fn allow_compaction(&self) -> bool {
+        match self.status.load(Ordering::SeqCst) {
+            TableStatus::Ok => true,
+            TableStatus::Closed | TableStatus::Dropped => false,
+        }
     }
 
     /// Returns total memtable memory usage in bytes.
@@ -653,6 +704,17 @@ impl TableDataSet {
             .cloned()
     }
 
+    pub fn total_memory_usage(&self) -> usize {
+        if self.table_datas.is_empty() {
+            return 0;
+        }
+        // TODO: Possible performance issue here when there are too many tables.
+        self.table_datas
+            .values()
+            .map(|t| t.memtable_memory_usage())
+            .sum()
+    }
+
     pub fn find_maximum_mutable_memory_usage_table(&self) -> Option<TableDataRef> {
         // TODO: Possible performance issue here when there are too many tables.
         self.table_datas
@@ -676,7 +738,7 @@ pub mod tests {
     use arena::NoopCollector;
     use common_types::{datum::DatumKind, table::DEFAULT_SHARD_ID};
     use table_engine::{
-        engine::{CreateTableRequest, TableState},
+        engine::{CreateTableParams, CreateTableRequest, TableState},
         table::SchemaId,
     };
     use time_ext::ReadableDuration;
@@ -713,6 +775,18 @@ pub mod tests {
             };
 
             let factory = SkiplistMemTableFactory;
+            factory.create_memtable(memtable_opts).unwrap()
+        }
+
+        pub fn build_columnar(&self) -> MemTableRef {
+            let memtable_opts = MemTableOptions {
+                schema: default_schema(),
+                arena_block_size: 1024 * 1024,
+                creation_sequence: 1000,
+                collector: Arc::new(NoopCollector),
+            };
+
+            let factory = ColumnarMemTableFactory;
             factory.create_memtable(memtable_opts).unwrap()
         }
     }
@@ -752,18 +826,21 @@ pub mod tests {
         pub fn build(self) -> TableData {
             let space_id = DEFAULT_SPACE_ID;
             let table_schema = default_schema();
-            let create_request = CreateTableRequest {
+            let params = CreateTableParams {
                 catalog_name: "test_catalog".to_string(),
                 schema_name: "public".to_string(),
-                schema_id: SchemaId::from_u32(DEFAULT_SPACE_ID),
-                table_id: self.table_id,
                 table_name: self.table_name,
                 table_schema,
                 engine: table_engine::ANALYTIC_ENGINE_TYPE.to_string(),
-                options: HashMap::new(),
+                table_options: HashMap::new(),
+                partition_info: None,
+            };
+            let create_request = CreateTableRequest {
+                params,
+                schema_id: SchemaId::from_u32(DEFAULT_SPACE_ID),
+                table_id: self.table_id,
                 state: TableState::Stable,
                 shard_id: self.shard_id,
-                partition_info: None,
             };
 
             let table_opts = TableOptions::default();
@@ -773,8 +850,8 @@ pub mod tests {
             TableData::new(
                 space_id,
                 create_request.table_id,
-                create_request.table_name,
-                create_request.table_schema,
+                create_request.params.table_name,
+                create_request.params.table_schema,
                 create_request.shard_id,
                 table_opts,
                 &purger,

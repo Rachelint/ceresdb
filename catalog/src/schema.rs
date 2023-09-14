@@ -1,8 +1,20 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Schema contains one or more tables
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use common_types::{column_schema::ColumnSchema, table::ShardId};
@@ -10,8 +22,7 @@ use generic_error::GenericError;
 use macros::define_result;
 use snafu::{Backtrace, Snafu};
 use table_engine::{
-    engine::{self, TableEngineRef, TableState},
-    partition::PartitionInfo,
+    engine::{self, CreateTableParams, TableEngineRef, TableState},
     table::{SchemaId, TableId, TableRef},
 };
 
@@ -186,27 +197,15 @@ pub type SchemaRef = Arc<dyn Schema + Send + Sync>;
 /// Request of creating table.
 #[derive(Debug, Clone)]
 pub struct CreateTableRequest {
-    /// Catalog name
-    pub catalog_name: String,
-    /// Schema name
-    pub schema_name: String,
-    /// Table name
-    pub table_name: String,
+    pub params: CreateTableParams,
     /// Table id
     // TODO: remove this field
     pub table_id: Option<TableId>,
     /// Table schema
-    pub table_schema: common_types::schema::Schema,
-    /// Table engine type
-    pub engine: String,
-    /// Table options used by each engine
-    pub options: HashMap<String, String>,
     /// Tells state of the table
     pub state: TableState,
     /// Shard id of the table
     pub shard_id: ShardId,
-    /// Partition info if this is a partitioned table
-    pub partition_info: Option<PartitionInfo>,
 }
 
 impl CreateTableRequest {
@@ -218,17 +217,11 @@ impl CreateTableRequest {
         let table_id = self.table_id.unwrap_or(table_id.unwrap_or(TableId::MIN));
 
         engine::CreateTableRequest {
-            catalog_name: self.catalog_name,
-            schema_name: self.schema_name,
+            params: self.params,
             schema_id,
-            table_name: self.table_name,
             table_id,
-            table_schema: self.table_schema,
-            engine: self.engine,
-            options: self.options,
             state: self.state,
             shard_id: self.shard_id,
-            partition_info: self.partition_info,
         }
     }
 }

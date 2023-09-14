@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Compaction picker.
 
@@ -410,7 +422,7 @@ impl SizeTieredPicker {
             return None;
         }
 
-        // Find the hotest bucket
+        // Find the hottest bucket
         if let Some((bucket, hotness)) =
             pruned_bucket_and_hotness
                 .into_iter()
@@ -419,12 +431,12 @@ impl SizeTieredPicker {
                     if !c.is_eq() {
                         return c;
                     }
-                    //TODO(boyan), compacting smallest sstables first?
+                    // TODO(boyan), compacting smallest sstables first?
                     b1.avg_size.cmp(&b2.avg_size)
                 })
         {
             debug!(
-                "Find the hotest bucket, hotness: {}, bucket: {:?}",
+                "Find the hottest bucket, hotness: {}, bucket: {:?}",
                 hotness, bucket
             );
             Some(bucket.files)
@@ -531,7 +543,7 @@ impl TimeWindowPicker {
 
             let (left, _) = Self::get_window_bounds_in_millis(window, ts);
 
-            let bucket_files = buckets.entry(left).or_insert_with(Vec::new);
+            let bucket_files = buckets.entry(left).or_default();
 
             bucket_files.push(f.clone());
 
@@ -684,8 +696,8 @@ impl LevelPicker for TimeWindowPicker {
 mod tests {
     use std::time::Duration;
 
+    use bytes_ext::Bytes;
     use common_types::{
-        bytes::Bytes,
         tests::build_schema,
         time::{TimeRange, Timestamp},
     };
@@ -712,7 +724,6 @@ mod tests {
             max_sequence: 200,
             schema: build_schema(),
             parquet_filter: Default::default(),
-            collapsible_cols_idx: Vec::new(),
         };
 
         SstMetaData::Parquet(Arc::new(parquet_meta_data))
@@ -802,7 +813,7 @@ mod tests {
 
     #[test]
     fn test_time_window_picker() {
-        let picker_manager = PickerManager::default();
+        let picker_manager = PickerManager;
         let twp = picker_manager.get_picker(CompactionStrategy::Default);
         let mut ctx = PickerContext {
             segment_duration: Duration::from_millis(1000),
@@ -861,6 +872,7 @@ mod tests {
                     row_num: 0,
                     max_seq: 0,
                     storage_format: StorageFormat::default(),
+                    associated_files: Vec::new(),
                 };
                 let queue = FilePurgeQueue::new(1, 1.into(), tx.clone());
                 FileHandle::new(file_meta, queue)
@@ -881,6 +893,7 @@ mod tests {
                     row_num: 0,
                     max_seq,
                     storage_format: StorageFormat::default(),
+                    associated_files: Vec::new(),
                 };
                 let queue = FilePurgeQueue::new(1, 1.into(), tx.clone());
                 FileHandle::new(file_meta, queue)

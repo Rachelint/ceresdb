@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Tools to generate SST.
 
@@ -98,7 +110,8 @@ pub async fn rebuild_sst(config: RebuildSstConfig, runtime: Arc<Runtime>) {
     let store = Arc::new(LocalFileSystem::new_with_prefix(config.store_path.clone()).unwrap()) as _;
     let input_path = Path::from(config.input_file_name);
 
-    let sst_meta = util::meta_from_sst(&store, &input_path, &None).await;
+    let parquet_metadata = util::parquet_metadata(&store, &input_path).await;
+    let sst_meta = util::meta_from_sst(&parquet_metadata, &store, &None).await;
 
     let projected_schema = ProjectedSchema::no_projection(sst_meta.schema.clone());
     let scan_options = ScanOptions {
@@ -107,7 +120,6 @@ pub async fn rebuild_sst(config: RebuildSstConfig, runtime: Arc<Runtime>) {
         num_streams_to_prefetch: 2,
     };
     let sst_read_options = SstReadOptions {
-        reverse: false,
         frequency: ReadFrequency::Once,
         num_rows_per_row_group: config.num_rows_per_row_group,
         projected_schema,
@@ -217,11 +229,10 @@ pub async fn merge_sst(config: MergeSstConfig, runtime: Arc<Runtime>) {
     };
 
     let request_id = RequestId::next_id();
-    let sst_factory: SstFactoryRef = Arc::new(FactoryImpl::default());
+    let sst_factory: SstFactoryRef = Arc::new(FactoryImpl);
     let store_picker: ObjectStorePickerRef = Arc::new(store);
     let projected_schema = ProjectedSchema::no_projection(schema.clone());
     let sst_read_options = SstReadOptions {
-        reverse: false,
         frequency: ReadFrequency::Once,
         num_rows_per_row_group: config.num_rows_per_row_group,
         projected_schema: projected_schema.clone(),

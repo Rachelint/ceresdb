@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Predict for query table.
 //! Reference to: https://github.com/influxdata/influxdb_iox/blob/29b10413051f8c4a2193e8633aa133e45b0e505a/query/src/predicate.rs
@@ -10,7 +22,10 @@ use common_types::{
     time::{TimeRange, Timestamp},
 };
 use datafusion::{
-    logical_expr::{Expr, Operator},
+    logical_expr::{
+        expr::{Alias, InList},
+        Expr, Operator,
+    },
     scalar::ScalarValue,
 };
 use datafusion_proto::bytes::Serializeable;
@@ -46,7 +61,7 @@ pub enum Error {
 define_result!(Error);
 
 /// Predicate helps determine whether specific row group should be read.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Predicate {
     /// Predicates in the query for filter out the columns that meet all the
     /// exprs.
@@ -375,11 +390,11 @@ impl<'a> TimeRangeExtractor<'a> {
 
                 TimeRange::min_to_max()
             }
-            Expr::InList {
+            Expr::InList(InList {
                 expr,
                 list,
                 negated,
-            } => {
+            }) => {
                 if let Expr::Column(column) = expr.as_ref() {
                     if column.name == self.timestamp_column_name {
                         return Self::time_range_from_list_expr(list, *negated);
@@ -389,13 +404,12 @@ impl<'a> TimeRangeExtractor<'a> {
                 TimeRange::min_to_max()
             }
 
-            Expr::Alias(_, _)
+            Expr::Alias(Alias { .. })
             | Expr::ScalarVariable(_, _)
             | Expr::Column(_)
             | Expr::Literal(_)
             | Expr::Not(_)
             | Expr::Like { .. }
-            | Expr::ILike { .. }
             | Expr::SimilarTo { .. }
             | Expr::IsNotNull(_)
             | Expr::IsNull(_)

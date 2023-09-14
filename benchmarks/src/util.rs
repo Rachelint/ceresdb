@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Utilities.
 
@@ -14,15 +26,14 @@ use analytic_engine::{
         },
         file::{FileHandle, FileMeta, FilePurgeQueue},
         manager::FileId,
-        meta_data::cache::MetaCacheRef,
-        parquet::encoding,
+        meta_data::cache::{self, MetaCacheRef},
         writer::MetaData,
     },
     table::sst_util,
     table_options::StorageFormat,
 };
+use bytes_ext::{BufMut, SafeBufMut};
 use common_types::{
-    bytes::{BufMut, SafeBufMut},
     projected_schema::ProjectedSchema,
     schema::{IndexInWriterSchema, Schema},
 };
@@ -37,10 +48,10 @@ use wal::log_batch::Payload;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Failed to writer header, err:{}.", source))]
-    WriteHeader { source: common_types::bytes::Error },
+    WriteHeader { source: bytes_ext::Error },
 
     #[snafu(display("Failed to writer body, err:{}.", source))]
-    WriteBody { source: common_types::bytes::Error },
+    WriteBody { source: bytes_ext::Error },
 }
 
 define_result!(Error);
@@ -54,18 +65,25 @@ pub fn new_runtime(thread_num: usize) -> Runtime {
         .unwrap()
 }
 
-pub async fn meta_from_sst(
+pub async fn parquet_metadata(
     store: &ObjectStoreRef,
     sst_path: &Path,
-    _meta_cache: &Option<MetaCacheRef>,
-) -> MetaData {
+) -> parquet_ext::ParquetMetaData {
     let get_result = store.get(sst_path).await.unwrap();
     let chunk_reader = get_result.bytes().await.unwrap();
-    let metadata = footer::parse_metadata(&chunk_reader).unwrap();
-    let kv_metas = metadata.file_metadata().key_value_metadata().unwrap();
+    footer::parse_metadata(&chunk_reader).unwrap()
+}
 
-    let parquet_meta_data = encoding::decode_sst_meta_data(&kv_metas[0]).unwrap();
-    MetaData::from(parquet_meta_data)
+pub async fn meta_from_sst(
+    metadata: &parquet_ext::ParquetMetaData,
+    store: &ObjectStoreRef,
+    _meta_cache: &Option<MetaCacheRef>,
+) -> MetaData {
+    let md = cache::MetaData::try_new(metadata, false, store.clone())
+        .await
+        .unwrap();
+
+    MetaData::from(md.custom().clone())
 }
 
 pub async fn schema_from_sst(
@@ -73,7 +91,8 @@ pub async fn schema_from_sst(
     sst_path: &Path,
     meta_cache: &Option<MetaCacheRef>,
 ) -> Schema {
-    let sst_meta = meta_from_sst(store, sst_path, meta_cache).await;
+    let parquet_metadata = parquet_metadata(store, sst_path).await;
+    let sst_meta = meta_from_sst(&parquet_metadata, store, meta_cache).await;
     sst_meta.schema
 }
 
@@ -105,7 +124,6 @@ pub async fn load_sst_to_memtable(
         num_streams_to_prefetch: 0,
     };
     let sst_read_options = SstReadOptions {
-        reverse: false,
         frequency: ReadFrequency::Frequent,
         num_rows_per_row_group: 8192,
         projected_schema: ProjectedSchema::no_projection(schema.clone()),
@@ -161,8 +179,9 @@ pub async fn file_handles_from_ssts(
 
     for file_id in sst_file_ids.iter() {
         let path = sst_util::new_sst_file_path(space_id, table_id, *file_id);
+        let parquet_metadata = parquet_metadata(store, &path).await;
+        let sst_meta = meta_from_sst(&parquet_metadata, store, meta_cache).await;
 
-        let sst_meta = meta_from_sst(store, &path, meta_cache).await;
         let file_meta = FileMeta {
             id: *file_id,
             size: 0,
@@ -170,6 +189,7 @@ pub async fn file_handles_from_ssts(
             time_range: sst_meta.time_range,
             max_seq: sst_meta.max_sequence,
             storage_format: StorageFormat::Columnar,
+            associated_files: Vec::new(),
         };
 
         let handle = FileHandle::new(file_meta, purge_queue.clone());

@@ -1,4 +1,16 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! The proxy module provides features such as forwarding and authentication,
 //! adapts to different protocols.
@@ -57,13 +69,12 @@ use interpreters::{
     interpreter::{InterpreterPtr, Output},
 };
 use log::{error, info};
-use query_engine::executor::Executor as QueryExecutor;
 use query_frontend::plan::Plan;
 use router::{endpoint::Endpoint, Router};
-use runtime::Runtime;
+use serde::{Deserialize, Serialize};
 use snafu::{OptionExt, ResultExt};
 use table_engine::{
-    engine::{EngineRuntimes, TableState},
+    engine::{CreateTableParams, EngineRuntimes, TableState},
     remote::model::{GetTableInfoRequest, TableIdentifier},
     table::{TableId, TableRef},
     PARTITION_TABLE_ENGINE_TYPE,
@@ -82,40 +93,54 @@ use crate::{
 // Because the clock may have errors, choose 1 hour as the error buffer
 const QUERY_EXPIRED_BUFFER: Duration = Duration::from_secs(60 * 60);
 
-pub struct Proxy<Q> {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SubTableAccessPerm {
+    pub enable_http: bool,
+    pub enable_others: bool,
+}
+
+impl Default for SubTableAccessPerm {
+    fn default() -> Self {
+        Self {
+            enable_http: true,
+            enable_others: true,
+        }
+    }
+}
+
+pub struct Proxy {
     router: Arc<dyn Router + Send + Sync>,
     forwarder: ForwarderRef,
-    instance: InstanceRef<Q>,
+    instance: InstanceRef,
     resp_compress_min_length: usize,
     auto_create_table: bool,
     schema_config_provider: SchemaConfigProviderRef,
     hotspot_recorder: Arc<HotspotRecorder>,
     engine_runtimes: Arc<EngineRuntimes>,
     cluster_with_meta: bool,
+    sub_table_access_perm: SubTableAccessPerm,
 }
 
-impl<Q: QueryExecutor + 'static> Proxy<Q> {
+impl Proxy {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<dyn Router + Send + Sync>,
-        instance: InstanceRef<Q>,
+        instance: InstanceRef,
         forward_config: forward::Config,
         local_endpoint: Endpoint,
         resp_compress_min_length: usize,
         auto_create_table: bool,
         schema_config_provider: SchemaConfigProviderRef,
-        hotspot_config: hotspot::Config,
+        hotspot_recorder: Arc<HotspotRecorder>,
         engine_runtimes: Arc<EngineRuntimes>,
         cluster_with_meta: bool,
+        sub_table_access_perm: SubTableAccessPerm,
     ) -> Self {
         let forwarder = Arc::new(Forwarder::new(
             forward_config,
             router.clone(),
             local_endpoint,
-        ));
-        let hotspot_recorder = Arc::new(HotspotRecorder::new(
-            hotspot_config,
-            engine_runtimes.default_runtime.clone(),
         ));
 
         Self {
@@ -128,10 +153,11 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
             hotspot_recorder,
             engine_runtimes,
             cluster_with_meta,
+            sub_table_access_perm,
         }
     }
 
-    pub fn instance(&self) -> InstanceRef<Q> {
+    pub fn instance(&self) -> InstanceRef {
         self.instance.clone()
     }
 
@@ -381,17 +407,20 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
         // Partition table is a virtual table, so we need to create it manually.
         // Partition info is stored in ceresmeta, so we need to use create_table_request
         // to create it.
-        let create_table_request = CreateTableRequest {
+        let params = CreateTableParams {
             catalog_name: catalog_name.to_string(),
             schema_name: schema_name.to_string(),
             table_name: partition_table_info.name,
-            table_id: Some(TableId::new(partition_table_info.id)),
             table_schema: table.table_schema,
             engine: table.engine,
-            options: table.options,
+            table_options: table.options,
+            partition_info: partition_table_info.partition_info,
+        };
+        let create_table_request = CreateTableRequest {
+            params,
+            table_id: Some(TableId::new(partition_table_info.id)),
             state: TableState::Stable,
             shard_id: DEFAULT_SHARD_ID,
-            partition_info: partition_table_info.partition_info,
         };
         let create_opts = CreateOptions {
             table_engine: self.instance.partition_table_engine.clone(),
@@ -505,7 +534,8 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
             .enable_partition_table_access(enable_partition_table_access)
             .build();
         let interpreter_factory = Factory::new(
-            self.instance.query_executor.clone(),
+            self.instance.query_engine.executor(),
+            self.instance.query_engine.physical_planner(),
             self.instance.catalog_manager.clone(),
             self.instance.table_engine.clone(),
             self.instance.table_manipulator.clone(),
@@ -545,10 +575,19 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Context {
-    pub timeout: Option<Duration>,
-    pub runtime: Arc<Runtime>,
-    pub enable_partition_table_access: bool,
-    pub forwarded_from: Option<String>,
+    request_id: RequestId,
+    timeout: Option<Duration>,
+    forwarded_from: Option<String>,
+}
+
+impl Context {
+    pub fn new(timeout: Option<Duration>, forwarded_from: Option<String>) -> Self {
+        Self {
+            request_id: RequestId::next_id(),
+            timeout,
+            forwarded_from,
+        }
+    }
 }

@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -162,17 +174,57 @@ pub struct NodeInfo {
     pub shard_infos: Vec<ShardInfo>,
 }
 
+/// The status changes of a shard as following:
+///
+///```plaintext
+///   ┌────┐
+///   │Init│
+///   └──┬─┘
+///   ___▽___
+///  ╱       ╲     ┌─────┐
+/// ╱ Opening ╲____│Ready│
+/// ╲         ╱yes └──┬──┘
+///  ╲_______╱    ┌───▽──┐
+///               │Frozen│
+///               └──────┘
+/// ```
+/// When an open request comes in, shard can only be opened when it's in
+/// - `Init`, which means it has not been opened before.
+/// - `Opening`, which means it has been opened before, but failed.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub enum ShardStatus {
+    /// Created, but not opened
+    #[default]
+    Init,
+    /// In opening
+    Opening,
+    /// Healthy
+    Ready,
+    /// Further updates are prohibited
+    Frozen,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct ShardInfo {
     pub id: ShardId,
     pub role: ShardRole,
     pub version: ShardVersion,
+    // This status is only used for request ceresdb send to ceresmeta via heartbeat
+    // When ceresdb receive this via open shard request, this field is meanless.
+    // TODO: Use different request and response body between ceresdb and
+    // ceresmeta.
+    pub status: ShardStatus,
 }
 
 impl ShardInfo {
     #[inline]
     pub fn is_leader(&self) -> bool {
         self.role == ShardRole::Leader
+    }
+
+    #[inline]
+    pub fn is_opened(&self) -> bool {
+        matches!(self.status, ShardStatus::Ready | ShardStatus::Frozen)
     }
 }
 
@@ -235,6 +287,11 @@ impl From<ShardInfo> for meta_service_pb::ShardInfo {
             id: shard_info.id,
             role: role as i32,
             version: shard_info.version,
+            status: Some(if shard_info.is_opened() {
+                meta_service_pb::shard_info::Status::Ready
+            } else {
+                meta_service_pb::shard_info::Status::PartialOpen
+            } as i32),
         }
     }
 }
@@ -245,6 +302,7 @@ impl From<&meta_service_pb::ShardInfo> for ShardInfo {
             id: pb_shard_info.id,
             role: pb_shard_info.role().into(),
             version: pb_shard_info.version,
+            status: ShardStatus::Init,
         }
     }
 }

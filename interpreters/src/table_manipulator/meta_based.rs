@@ -1,4 +1,16 @@
-// Copyright 2022-2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use async_trait::async_trait;
 use common_types::schema::SchemaEncoder;
@@ -37,13 +49,32 @@ impl TableManipulator for TableManipulatorImpl {
         &self,
         ctx: Context,
         plan: CreateTablePlan,
-        _table_engine: TableEngineRef,
+        table_engine: TableEngineRef,
     ) -> Result<Output> {
+        {
+            let params = table_engine::engine::CreateTableParams {
+                catalog_name: ctx.default_catalog().to_string(),
+                schema_name: ctx.default_schema().to_string(),
+                table_name: plan.table.clone(),
+                table_schema: plan.table_schema.clone(),
+                engine: plan.engine.clone(),
+                table_options: plan.options.clone(),
+                partition_info: plan.partition_info.clone(),
+            };
+            table_engine
+                .validate_create_table(&params)
+                .await
+                .box_err()
+                .with_context(|| CreateWithCause {
+                    msg: format!("invalid parameters to create table, plan:{plan:?}"),
+                })?;
+        }
+
         let encoded_schema = SchemaEncoder::default()
             .encode(&plan.table_schema)
             .box_err()
             .with_context(|| CreateWithCause {
-                msg: format!("fail to encode table schema, ctx:{ctx:?}, plan:{plan:?}"),
+                msg: format!("fail to encode table schema, plan:{plan:?}"),
             })?;
 
         let partition_table_info = create_partition_table_info(&plan.table, &plan.partition_info);

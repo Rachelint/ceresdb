@@ -1,4 +1,16 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Contains common methods used by the read process.
 
@@ -7,13 +19,11 @@ use std::time::Instant;
 use ceresdbproto::storage::{
     storage_service_client::StorageServiceClient, RequestContext, SqlQueryRequest, SqlQueryResponse,
 };
-use common_types::request_id::RequestId;
 use futures::FutureExt;
 use generic_error::BoxError;
 use http::StatusCode;
 use interpreters::interpreter::Output;
 use log::{error, info, warn};
-use query_engine::executor::Executor as QueryExecutor;
 use query_frontend::{
     frontend,
     frontend::{Context as SqlContext, Frontend},
@@ -35,12 +45,13 @@ pub enum SqlResponse {
     Local(Output),
 }
 
-impl<Q: QueryExecutor + 'static> Proxy<Q> {
+impl Proxy {
     pub(crate) async fn handle_sql(
         &self,
-        ctx: Context,
+        ctx: &Context,
         schema: &str,
         sql: &str,
+        enable_partition_table_access: bool,
     ) -> Result<SqlResponse> {
         if let Some(resp) = self
             .maybe_forward_sql_query(ctx.clone(), schema, sql)
@@ -53,22 +64,25 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
         };
 
         Ok(SqlResponse::Local(
-            self.fetch_sql_query_output(ctx, schema, sql).await?,
+            self.fetch_sql_query_output(ctx, schema, sql, enable_partition_table_access)
+                .await?,
         ))
     }
 
     pub(crate) async fn fetch_sql_query_output(
         &self,
-        ctx: Context,
+        ctx: &Context,
+        // TODO: maybe we can put params below input a new ReadRequest struct.
         schema: &str,
         sql: &str,
+        enable_partition_table_access: bool,
     ) -> Result<Output> {
-        let request_id = RequestId::next_id();
+        let request_id = ctx.request_id;
         let begin_instant = Instant::now();
         let deadline = ctx.timeout.map(|t| begin_instant + t);
         let catalog = self.instance.catalog_manager.default_catalog_name();
 
-        info!("Handle sql query, request_id:{request_id}, schema:{schema}, sql:{sql}");
+        info!("Handle sql query begin, catalog:{catalog}, schema:{schema}, deadline:{deadline:?}, ctx:{ctx:?}, sql:{sql}");
 
         let instance = &self.instance;
         // TODO(yingwen): Privilege check, cannot access data of other tenant
@@ -92,24 +106,14 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
                 msg: "Failed to parse sql",
             })?;
 
+        // TODO: For simplicity, we only support executing one statement
+        let stmts_len = stmts.len();
         ensure!(
-            !stmts.is_empty(),
-            ErrNoCause {
-                code: StatusCode::BAD_REQUEST,
-                msg: format!("No valid query statement provided, sql:{sql}",),
-            }
-        );
-
-        // TODO(yingwen): For simplicity, we only support executing one statement now
-        // TODO(yingwen): INSERT/UPDATE/DELETE can be batched
-        ensure!(
-            stmts.len() == 1,
+            stmts_len == 1,
             ErrNoCause {
                 code: StatusCode::BAD_REQUEST,
                 msg: format!(
-                    "Only support execute one statement now, current num:{}, sql:{}",
-                    stmts.len(),
-                    sql
+                    "Only support execute one statement now, current num:{stmts_len}, sql:{sql}"
                 ),
             }
         );
@@ -126,7 +130,7 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
         let plan = frontend
             // TODO(yingwen): Check error, some error may indicate that the sql is invalid. Now we
             // return internal server error in those cases
-            .statement_to_plan(&mut sql_ctx, stmts.remove(0))
+            .statement_to_plan(&sql_ctx, stmts.remove(0))
             .box_err()
             .with_context(|| ErrWithCause {
                 code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -143,7 +147,7 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
             }
         }
 
-        let output = if ctx.enable_partition_table_access {
+        let output = if enable_partition_table_access {
             self.execute_plan_involving_partition_table(request_id, catalog, schema, plan, deadline)
                 .await
         } else {
@@ -156,7 +160,7 @@ impl<Q: QueryExecutor + 'static> Proxy<Q> {
         })?;
 
         let cost = begin_instant.saturating_elapsed();
-        info!("Handle sql query success, catalog:{catalog}, schema:{schema}, request_id:{request_id}, cost:{cost:?}, sql:{sql:?}");
+        info!("Handle sql query successfully, catalog:{catalog}, schema:{schema}, cost:{cost:?}, ctx:{ctx:?}, sql:{sql}");
 
         match &output {
             Output::AffectedRows(_) => Ok(output),

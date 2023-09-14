@@ -1,21 +1,36 @@
-// Copyright 2023 CeresDB Project Authors. Licensed under Apache-2.0.
+// Copyright 2023 The CeresDB Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //! Partition table engine implementations
 
 mod error;
 mod metrics;
 mod partition;
+pub mod scan_builder;
+pub mod test_util;
 
 use std::sync::Arc;
 
+use analytic_engine::TableOptions;
 use async_trait::async_trait;
 use generic_error::BoxError;
 use snafu::{OptionExt, ResultExt};
 use table_engine::{
     engine::{
-        CloseShardRequest, CloseTableRequest, CreateTableRequest, DropTableRequest,
-        OpenShardRequest, OpenShardResult, OpenTableRequest, Result, TableEngine, Unexpected,
-        UnexpectedNoCause,
+        CloseShardRequest, CloseTableRequest, CreateTableParams, CreateTableRequest,
+        DropTableRequest, OpenShardRequest, OpenShardResult, OpenTableRequest, Result, TableEngine,
+        Unexpected, UnexpectedNoCause,
     },
     remote::RemoteEngineRef,
     table::TableRef,
@@ -45,18 +60,25 @@ impl TableEngine for PartitionTableEngine {
         Ok(())
     }
 
+    /// Validate the request of create table.
+    async fn validate_create_table(&self, _params: &CreateTableParams) -> Result<()> {
+        Ok(())
+    }
+
     async fn create_table(&self, request: CreateTableRequest) -> Result<TableRef> {
         let table_data = TableData {
-            catalog_name: request.catalog_name,
-            schema_name: request.schema_name,
-            table_name: request.table_name,
+            catalog_name: request.params.catalog_name,
+            schema_name: request.params.schema_name,
+            table_name: request.params.table_name,
             table_id: request.table_id,
-            table_schema: request.table_schema,
-            partition_info: request.partition_info.context(UnexpectedNoCause {
+            table_schema: request.params.table_schema,
+            partition_info: request.params.partition_info.context(UnexpectedNoCause {
                 msg: "partition info not found",
             })?,
-            options: request.options,
-            engine_type: request.engine,
+            options: TableOptions::from_map(&request.params.table_options, true)
+                .box_err()
+                .context(Unexpected)?,
+            engine_type: request.params.engine,
         };
         Ok(Arc::new(
             PartitionTableImpl::new(table_data, self.remote_engine_ref.clone())
