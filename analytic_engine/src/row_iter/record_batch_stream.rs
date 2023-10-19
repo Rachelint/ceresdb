@@ -222,6 +222,7 @@ pub fn filtered_stream_from_memtable(
 ) -> Result<BoxedPrefetchableRecordBatchStream> {
     stream_from_memtable(
         projected_schema.clone(),
+        predicate,
         need_dedup,
         memtable,
         reverse,
@@ -242,6 +243,7 @@ pub fn filtered_stream_from_memtable(
 /// Build [SequencedRecordBatchStream] from a memtable.
 pub fn stream_from_memtable(
     projected_schema: ProjectedSchema,
+    predicate: &Predicate,
     need_dedup: bool,
     memtable: &MemTableRef,
     reverse: bool,
@@ -263,6 +265,7 @@ pub fn stream_from_memtable(
         need_dedup,
         reverse,
         metrics_collector,
+        time_range: predicate.time_range(),
     };
 
     let iter = memtable.scan(scan_ctx, scan_req).context(ScanMemtable)?;

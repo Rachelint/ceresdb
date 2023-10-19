@@ -361,7 +361,7 @@ fn cast_arrow_record_batch(source: ArrowRecordBatch) -> Result<ArrowRecordBatch>
     Ok(result)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordBatchWithKey {
     schema_with_key: RecordSchemaWithKey,
     data: RecordBatchData,

@@ -12,39 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Columnar memtable factory
+//! Skiplist memtable factory
 
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, AtomicUsize},
-        Arc, RwLock,
-    },
-};
+use std::sync::{atomic::AtomicU64, Arc};
+
+use arena::MonoIncArena;
+use skiplist::{BytewiseComparator, Skiplist};
 
 use crate::memtable::{
-    columnar::ColumnarMemTable,
-    factory::{Factory, Options},
+    factory::{Factory, FactoryRef, Options},
+    layered::LayeredMemTable,
+    skiplist::SkiplistMemTable,
     MemTableRef, Result,
 };
 /// Factory to create memtable
 #[derive(Debug)]
-pub struct ColumnarMemTableFactory;
+pub struct LayeredMemtableFactory {
+    inner_memtable_factory: FactoryRef,
+    mutable_switch_threshold: usize,
+}
 
-impl Factory for ColumnarMemTableFactory {
+impl Factory for LayeredMemtableFactory {
     fn create_memtable(&self, opts: Options) -> Result<MemTableRef> {
-        let memtable = Arc::new(ColumnarMemTable {
-            memtable: Arc::new(RwLock::new(HashMap::with_capacity(
-                opts.schema.num_columns(),
-            ))),
-            schema: opts.schema.clone(),
-            last_sequence: AtomicU64::new(opts.creation_sequence),
-            row_num: AtomicUsize::new(0),
-            opts,
-            memtable_size: AtomicUsize::new(0),
-            metrics: Default::default(),
-        });
+        let memtable = LayeredMemTable::new(
+            &opts,
+            self.inner_memtable_factory.clone(),
+            self.mutable_switch_threshold,
+        )?;
 
-        Ok(memtable)
+        Ok(Arc::new(memtable))
     }
 }
