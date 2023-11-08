@@ -15,10 +15,12 @@
 //! Skiplist memtable iterator
 
 use common_types::{record_batch::RecordBatchWithKey, time::TimeRange};
+use generic_error::BoxError;
+use snafu::ResultExt;
 
 use crate::memtable::{
     layered::{ImmutableSegment, MutableSegment},
-    ColumnarIterPtr, Result, ScanContext, ScanRequest,
+    ColumnarIterPtr, Internal, Result, ScanContext, ScanRequest,
 };
 
 /// Columnar iterator for [LayeredMemTable]
@@ -36,16 +38,34 @@ impl ColumnarIterImpl {
         let (maybe_mutable, selected_immutables) =
             Self::filter_by_time_range(mutable, immutables, request.time_range);
 
+        // TODO: reduce clone here.
+        let immutable_batches = selected_immutables
+            .flat_map(|imm| {
+                imm.record_batches().iter().map(|batch| {
+                    let schema_with_key = batch.schema_with_key().clone();
+                    let projected_batch = batch
+                        .clone()
+                        .try_project(&request.projected_schema)
+                        .box_err()
+                        .with_context(|| Internal {
+                            msg: format!(
+                                "time_range:{:?}, projection:{:?}",
+                                request.time_range,
+                                request.projected_schema.projection()
+                            ),
+                        });
+                    projected_batch.map(|batch| {
+                        RecordBatchWithKey::new(schema_with_key, batch.into_record_batch_data())
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let immutable_iter = immutable_batches.into_iter();
+
         let maybe_mutable_iter = match maybe_mutable {
             Some(mutable) => Some(mutable.scan(ctx, request)?),
             None => None,
         };
-
-        // TODO: reduce clone here.
-        let immutable_batches = selected_immutables
-            .flat_map(|imm| imm.record_batches().to_vec())
-            .collect::<Vec<_>>();
-        let immutable_iter = immutable_batches.into_iter().map(Result::Ok);
 
         let maybe_chained_iter = match maybe_mutable_iter {
             Some(mutable_iter) => Box::new(mutable_iter.chain(immutable_iter)) as _,

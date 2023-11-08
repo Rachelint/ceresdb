@@ -279,6 +279,11 @@ impl RecordBatch {
     pub fn into_arrow_record_batch(self) -> ArrowRecordBatch {
         self.data.arrow_record_batch
     }
+
+    #[inline]
+    pub fn into_record_batch_data(self) -> RecordBatchData {
+        self.data
+    }
 }
 
 impl TryFrom<ArrowRecordBatch> for RecordBatch {
