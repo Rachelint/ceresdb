@@ -26,8 +26,8 @@ use std::{ops::Bound, sync::Arc, time::Instant};
 
 use bytes_ext::{ByteVec, Bytes};
 use common_types::{
-    projected_schema::ProjectedSchema,
-    record_batch::RecordBatchWithKey,
+    projected_schema::{ProjectedSchema, RecordFetchingContextBuilder},
+    record_batch::FetchingRecordBatch,
     row::Row,
     schema::{IndexInWriterSchema, Schema},
     time::TimeRange,
@@ -210,7 +210,7 @@ pub struct ScanRequest {
     /// visible.
     pub sequence: SequenceNumber,
     /// Schema and projection to read.
-    pub projected_schema: ProjectedSchema,
+    pub record_fetching_ctx_builder: RecordFetchingContextBuilder,
     pub need_dedup: bool,
     pub reverse: bool,
     /// Collector for scan metrics.
@@ -299,4 +299,4 @@ pub struct Metrics {
 pub type MemTableRef = Arc<dyn MemTable + Send + Sync>;
 
 /// A pointer to columnar iterator
-pub type ColumnarIterPtr = Box<dyn Iterator<Item = Result<RecordBatchWithKey>> + Send + Sync>;
+pub type ColumnarIterPtr = Box<dyn Iterator<Item = Result<FetchingRecordBatch>> + Send + Sync>;
