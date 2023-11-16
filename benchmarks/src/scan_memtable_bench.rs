@@ -25,7 +25,11 @@ use analytic_engine::{
     sst::meta_data::cache::MetaCacheRef,
 };
 use arena::NoopCollector;
+<<<<<<< HEAD
 use common_types::{projected_schema::ProjectedSchema, time::TimeRange};
+=======
+use common_types::projected_schema::{ProjectedSchema, RecordFetchingContextBuilder};
+>>>>>>> b87f99fb7 (fix tools and benches.)
 use logger::info;
 use object_store::{LocalFileSystem, Path};
 
@@ -91,15 +95,19 @@ impl ScanMemTableBench {
 
     pub fn run_bench(&self) {
         let scan_ctx = ScanContext::default();
+        let fetching_schema = self.projected_schema.to_record_schema();
+        let table_schema = self.projected_schema.table_schema();
+        let record_fetching_ctx_builder =
+            RecordFetchingContextBuilder::new(fetching_schema, table_schema.clone(), None);
         let scan_req = ScanRequest {
             start_user_key: Bound::Unbounded,
             end_user_key: Bound::Unbounded,
             sequence: common_types::MAX_SEQUENCE_NUMBER,
-            projected_schema: self.projected_schema.clone(),
             need_dedup: true,
             reverse: false,
             metrics_collector: None,
             time_range: TimeRange::min_to_max(),
+            record_fetching_ctx_builder,
         };
 
         let iter = self.memtable.scan(scan_ctx, scan_req).unwrap();
