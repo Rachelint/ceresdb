@@ -402,6 +402,18 @@ impl TableData {
             enable_primary_key_sampling,
         } = config;
         let memtable_factory = Arc::new(SkiplistMemTableFactory);
+
+        // Wrap it by `LayeredMemtable`.
+        let mutable_switch_threshold = compute_mutable_switch_threshold(
+            add_meta.opts.write_buffer_size,
+            preflush_write_buffer_size_ratio,
+            0.125,
+        );
+        let memtable_factory = Arc::new(LayeredMemtableFactory::new(
+            memtable_factory,
+            mutable_switch_threshold as usize,
+        ));
+
         let purge_queue = purger.create_purge_queue(add_meta.space_id, add_meta.table_id);
         let current_version =
             TableVersion::new(mem_size_options.size_sampling_interval, purge_queue);
