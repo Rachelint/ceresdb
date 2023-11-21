@@ -116,10 +116,14 @@ impl MemTable for LayeredMemTable {
         let memory_usage = {
             let inner = self.inner.read().unwrap();
             inner.put(ctx, sequence, row, schema)?;
-            inner.approximate_memory_usage()
+            inner.mutable_segment.0.approximate_memory_usage()
         };
 
         if memory_usage > self.mutable_switch_threshold {
+            debug!(
+                "LayeredMemTable put, memory_usage:{memory_usage}, mutable_switch_threshold:{}",
+                self.mutable_switch_threshold
+            );
             let inner = &mut *self.inner.write().unwrap();
             inner.switch_mutable_segment(self.schema.clone())?;
         }

@@ -302,9 +302,9 @@ impl TimeRange {
     }
 
     pub fn merge_range(&self, other: TimeRange) -> TimeRange {
-        TimeRange { 
+        TimeRange {
             inclusive_start: self.inclusive_start.min(other.inclusive_start),
-            exclusive_end: self.exclusive_end.max(other.exclusive_end)
+            exclusive_end: self.exclusive_end.max(other.exclusive_end),
         }
     }
 }
