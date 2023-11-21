@@ -37,6 +37,7 @@ use common_types::{
     SequenceNumber,
 };
 use generic_error::BoxError;
+use logger::debug;
 use skiplist::{BytewiseComparator, KeyComparator};
 use snafu::{OptionExt, ResultExt};
 
@@ -127,6 +128,7 @@ impl MemTable for LayeredMemTable {
     }
 
     fn scan(&self, ctx: ScanContext, request: ScanRequest) -> Result<ColumnarIterPtr> {
+        debug!("LayeredMemTable scan");
         let inner = self.inner.read().unwrap();
         inner.scan(&self.schema, ctx, request)
     }
@@ -216,6 +218,9 @@ impl Inner {
     }
 
     fn switch_mutable_segment(&mut self, schema: Schema) -> Result<()> {
+        let imm_num = self.immutable_segments.len();
+        debug!("LayeredMemTable switch_mutable_segment, imm_num:{imm_num}");
+
         // Build a new mutable segment, and replace current's.
         let new_mutable = self.mutable_segment_builder.build()?;
         let current_mutable = mem::replace(&mut self.mutable_segment, new_mutable);
