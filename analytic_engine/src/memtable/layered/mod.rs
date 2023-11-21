@@ -334,7 +334,7 @@ impl Inner {
             let mut imm_iter = self.immutable_segments.iter();
             let _ = imm_iter.next();
             for imm in imm_iter {
-                time_range = time_range.intersected_range(imm.time_range()).unwrap();
+                time_range = time_range.merge_range(imm.time_range());
             }
 
             Some(time_range)
@@ -343,7 +343,7 @@ impl Inner {
         match (mutable_time_range, immutable_time_range) {
             (None, None) => None,
             (None, Some(range)) | (Some(range), None) => Some(range),
-            (Some(range1), Some(range2)) => Some(range1.intersected_range(range2).unwrap()),
+            (Some(range1), Some(range2)) => Some(range1.merge_range(range2)),
         }
     }
 
