@@ -25,11 +25,10 @@ use analytic_engine::{
     sst::meta_data::cache::MetaCacheRef,
 };
 use arena::NoopCollector;
-<<<<<<< HEAD
-use common_types::{projected_schema::ProjectedSchema, time::TimeRange};
-=======
-use common_types::projected_schema::{ProjectedSchema, RecordFetchingContextBuilder};
->>>>>>> b87f99fb7 (fix tools and benches.)
+use common_types::{
+    projected_schema::{ProjectedSchema, RecordFetchingContextBuilder},
+    time::TimeRange,
+};
 use logger::info;
 use object_store::{LocalFileSystem, Path};
 

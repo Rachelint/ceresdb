@@ -377,22 +377,24 @@ pub struct FetchingRecordBatch {
 
 impl FetchingRecordBatch {
     pub fn try_new(
-        ctx: &RecordFetchingContext,
+        fetching_schema: RecordSchema,
+        primary_key_indexes: Option<Vec<usize>>,
+        fetching_column_indexes: &[Option<usize>],
         arrow_record_batch: ArrowRecordBatch,
     ) -> Result<Self> {
-        let column_indexes = ctx.fetching_projected_source_column_indexes();
-        let schema = ctx.fetching_schema().clone();
-        let mut column_blocks = Vec::with_capacity(schema.num_columns());
-
+        let mut column_blocks = Vec::with_capacity(fetching_schema.num_columns());
         let num_rows = arrow_record_batch.num_rows();
         let num_columns = arrow_record_batch.num_columns();
-        for (col_idx_opt, col_schema) in column_indexes.iter().zip(schema.columns()) {
+        for (col_idx_opt, col_schema) in fetching_column_indexes
+            .iter()
+            .zip(fetching_schema.columns())
+        {
             match col_idx_opt {
                 Some(col_idx) => {
                     ensure!(
                         *col_idx < num_columns,
                         OutOfIndexProjection {
-                            source_projection: column_indexes,
+                            source_projection: fetching_column_indexes,
                             arrow_schema: arrow_record_batch.schema()
                         }
                     );
@@ -417,11 +419,11 @@ impl FetchingRecordBatch {
             }
         }
 
-        let data = RecordBatchData::new(schema.to_arrow_schema_ref(), column_blocks)?;
+        let data = RecordBatchData::new(fetching_schema.to_arrow_schema_ref(), column_blocks)?;
 
         Ok(FetchingRecordBatch {
-            schema,
-            primary_key_indexes: ctx.primary_key_indexes().map(|idxs| idxs.to_vec()),
+            schema: fetching_schema,
+            primary_key_indexes,
             data,
         })
     }

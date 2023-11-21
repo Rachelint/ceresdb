@@ -529,9 +529,19 @@ impl Stream for RecordBatchProjector {
                             projector.metrics.row_mem += col.get_array_memory_size();
                         }
                         projector.metrics.row_num += record_batch.num_rows();
-
+                        let fetching_schema =
+                            projector.record_fetching_ctx.fetching_schema().clone();
+                        let primary_key_indexes = projector
+                            .record_fetching_ctx
+                            .primary_key_indexes()
+                            .map(|idxs| idxs.to_vec());
+                        let fetching_column_indexes = projector
+                            .record_fetching_ctx
+                            .fetching_projected_source_column_indexes();
                         let projected_batch = FetchingRecordBatch::try_new(
-                            &projector.record_fetching_ctx,
+                            fetching_schema,
+                            primary_key_indexes,
+                            fetching_column_indexes,
                             record_batch,
                         )
                         .box_err()

@@ -728,11 +728,22 @@ impl FlushTask {
 
         let iter = build_mem_table_iter(memtable_state.mem.clone(), &self.table_data)?;
 
-        let record_batch_stream: RecordBatchStream =
-            Box::new(stream::iter(iter).map_err(|e| Box::new(e) as _));
-
+        // let record_batch_stream: RecordBatchStream =
+        //     Box::new(stream::iter(iter).map_err(|e| Box::new(e) as _));
+        let schema = self.table_data.schema();
+        let primary_key_indexes = schema.primary_key_indexes().to_vec();
+        let reorder = Reorder {
+            iter,
+            schema,
+            order_by_col_indexes: primary_key_indexes,
+        };
+        let record_batch_stream = reorder
+            .into_stream()
+            .await
+            .context(ReorderMemIter)?
+            .map(|batch| batch.box_err());
         let sst_info = writer
-            .write(request_id, &sst_meta, record_batch_stream)
+            .write(request_id, &sst_meta, Box::new(record_batch_stream))
             .await
             .box_err()
             .with_context(|| WriteSst {

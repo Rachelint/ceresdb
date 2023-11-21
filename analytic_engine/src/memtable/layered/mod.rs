@@ -27,10 +27,14 @@ use std::{
 };
 
 use arena::CollectorRef;
+use arrow::record_batch::RecordBatch as ArrowRecordBatch;
 use bytes_ext::Bytes;
 use common_types::{
-    projected_schema::ProjectedSchema, record_batch::RecordBatchWithKey, row::Row, schema::Schema,
-    time::TimeRange, SequenceNumber,
+    projected_schema::{ProjectedSchema, RecordFetchingContextBuilder},
+    row::Row,
+    schema::Schema,
+    time::TimeRange,
+    SequenceNumber,
 };
 use generic_error::BoxError;
 use skiplist::{BytewiseComparator, KeyComparator};
@@ -124,7 +128,7 @@ impl MemTable for LayeredMemTable {
 
     fn scan(&self, ctx: ScanContext, request: ScanRequest) -> Result<ColumnarIterPtr> {
         let inner = self.inner.read().unwrap();
-        inner.scan(ctx, request)
+        inner.scan(&self.schema, ctx, request)
     }
 
     fn approximate_memory_usage(&self) -> usize {
@@ -184,8 +188,14 @@ impl Inner {
 
     /// Scan batches including `mutable` and `immutable`s.
     #[inline]
-    fn scan(&self, ctx: ScanContext, request: ScanRequest) -> Result<ColumnarIterPtr> {
+    fn scan(
+        &self,
+        schema: &Schema,
+        ctx: ScanContext,
+        request: ScanRequest,
+    ) -> Result<ColumnarIterPtr> {
         let iter = ColumnarIterImpl::new(
+            schema,
             ctx,
             request,
             &self.mutable_segment,
@@ -209,23 +219,28 @@ impl Inner {
         // Build a new mutable segment, and replace current's.
         let new_mutable = self.mutable_segment_builder.build()?;
         let current_mutable = mem::replace(&mut self.mutable_segment, new_mutable);
+        let fetching_schema = schema.to_record_schema();
 
         // Convert current's to immutable.
         let scan_ctx = ScanContext::default();
+        let record_fetching_ctx_builder =
+            RecordFetchingContextBuilder::new(fetching_schema, schema, None);
         let scan_req = ScanRequest {
             start_user_key: Bound::Unbounded,
             end_user_key: Bound::Unbounded,
             sequence: common_types::MAX_SEQUENCE_NUMBER,
-            projected_schema: ProjectedSchema::no_projection(schema),
             need_dedup: false,
             reverse: false,
             metrics_collector: None,
             time_range: TimeRange::min_to_max(),
+            record_fetching_ctx_builder,
         };
 
         let immutable_batches = current_mutable
             .scan(scan_ctx, scan_req)?
+            .map(|batch_res| batch_res.map(|batch| batch.into_arrow_record_batch()))
             .collect::<Result<Vec<_>>>()?;
+
         let time_range = current_mutable.time_range().context(InternalNoCause {
             msg: "failed to get time range from mutable segment",
         })?;
@@ -399,7 +414,7 @@ struct MutableBuilderOptions {
 /// Immutable batch
 pub(crate) struct ImmutableSegment {
     /// Record batch converted from `MutableBatch`    
-    record_batches: Vec<RecordBatchWithKey>,
+    record_batches: Vec<ArrowRecordBatch>,
 
     /// Min time of source `MutableBatch`
     time_range: TimeRange,
@@ -415,14 +430,14 @@ pub(crate) struct ImmutableSegment {
 
 impl ImmutableSegment {
     fn new(
-        record_batches: Vec<RecordBatchWithKey>,
+        record_batches: Vec<ArrowRecordBatch>,
         time_range: TimeRange,
         min_key: Bytes,
         max_key: Bytes,
     ) -> Self {
         let approximate_memory_size = record_batches
             .iter()
-            .map(|batch| batch.as_arrow_record_batch().get_array_memory_size())
+            .map(|batch| batch.get_array_memory_size())
             .sum();
 
         Self {
@@ -447,7 +462,7 @@ impl ImmutableSegment {
     }
 
     // TODO: maybe return a iterator?
-    pub fn record_batches(&self) -> &[RecordBatchWithKey] {
+    pub fn record_batches(&self) -> &[ArrowRecordBatch] {
         &self.record_batches
     }
 
@@ -468,7 +483,7 @@ mod tests {
     use common_types::{
         datum::Datum,
         projected_schema::ProjectedSchema,
-        record_batch::RecordBatchWithKey,
+        record_batch::FetchingRecordBatch,
         row::Row,
         schema::IndexInWriterSchema,
         tests::{build_row, build_schema},
@@ -561,10 +576,9 @@ mod tests {
         let schema = memtable.schema().clone();
 
         // No projection.
-        // let projection = (0..schema.num_columns()).into_iter().collect::<Vec<_>>();
-        // let expected = test_util.data();
-        // test_memtable_scan_internal(schema.clone(), projection, memtable.clone(),
-        // expected);
+        let projection = (0..schema.num_columns()).into_iter().collect::<Vec<_>>();
+        let expected = test_util.data();
+        test_memtable_scan_internal(schema.clone(), projection, memtable.clone(), expected);
 
         // Projection to first three.
         let projection = vec![0, 1, 3];
@@ -585,14 +599,18 @@ mod tests {
         memtable: Arc<dyn MemTable + Send + Sync>,
         expected: Vec<Row>,
     ) {
-        let projected_schema = dbg!(ProjectedSchema::new(schema, Some(projection)).unwrap());
+        let projected_schema = ProjectedSchema::new(schema, Some(projection)).unwrap();
+        let fetching_schema = projected_schema.to_record_schema();
+        let table_schema = projected_schema.table_schema();
+        let record_fetching_ctx_builder =
+            RecordFetchingContextBuilder::new(fetching_schema, table_schema.clone(), None);
 
         // limited by sequence
         let scan_request = ScanRequest {
             start_user_key: Bound::Unbounded,
             end_user_key: Bound::Unbounded,
             sequence: SequenceNumber::MAX,
-            projected_schema: projected_schema.clone(),
+            record_fetching_ctx_builder,
             need_dedup: false,
             reverse: false,
             metrics_collector: None,
@@ -603,7 +621,7 @@ mod tests {
         check_iterator(iter, expected);
     }
 
-    fn check_iterator<T: Iterator<Item = Result<RecordBatchWithKey>>>(
+    fn check_iterator<T: Iterator<Item = Result<FetchingRecordBatch>>>(
         iter: T,
         expected_rows: Vec<Row>,
     ) {

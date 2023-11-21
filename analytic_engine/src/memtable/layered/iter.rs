@@ -14,13 +14,18 @@
 
 //! Skiplist memtable iterator
 
-use common_types::{record_batch::RecordBatchWithKey, time::TimeRange};
+use arrow::ipc::RecordBatchBuilder;
+use common_types::{
+    record_batch::{FetchingRecordBatch, FetchingRecordBatchBuilder},
+    schema::Schema,
+    time::TimeRange,
+};
 use generic_error::BoxError;
 use snafu::ResultExt;
 
 use crate::memtable::{
     layered::{ImmutableSegment, MutableSegment},
-    ColumnarIterPtr, Internal, Result, ScanContext, ScanRequest,
+    ColumnarIterPtr, Internal, ProjectSchema, Result, ScanContext, ScanRequest,
 };
 
 /// Columnar iterator for [LayeredMemTable]
@@ -30,11 +35,18 @@ pub(crate) struct ColumnarIterImpl {
 
 impl ColumnarIterImpl {
     pub fn new(
+        memtable_schema: &Schema,
         ctx: ScanContext,
         request: ScanRequest,
         mutable: &MutableSegment,
         immutables: &[ImmutableSegment],
     ) -> Result<Self> {
+        // Create projection for the memtable schema
+        let record_fetching_ctx = request
+            .record_fetching_ctx_builder
+            .build(memtable_schema)
+            .context(ProjectSchema)?;
+
         let (maybe_mutable, selected_immutables) =
             Self::filter_by_time_range(mutable, immutables, request.time_range);
 
@@ -42,20 +54,21 @@ impl ColumnarIterImpl {
         let immutable_batches = selected_immutables
             .flat_map(|imm| {
                 imm.record_batches().iter().map(|batch| {
-                    let schema_with_key = batch.schema_with_key().clone();
-                    let projected_batch = batch
-                        .clone()
-                        .try_project(&request.projected_schema)
-                        .box_err()
-                        .with_context(|| Internal {
-                            msg: format!(
-                                "time_range:{:?}, projection:{:?}",
-                                request.time_range,
-                                request.projected_schema.projection()
-                            ),
-                        });
-                    projected_batch.map(|batch| {
-                        RecordBatchWithKey::new(schema_with_key, batch.into_record_batch_data())
+                    let fetching_schema = record_fetching_ctx.fetching_schema().clone();
+                    let primary_key_indexes = record_fetching_ctx
+                        .primary_key_indexes()
+                        .map(|idxs| idxs.to_vec());
+                    let fetching_column_indexes =
+                        record_fetching_ctx.fetching_source_column_indexes();
+                    FetchingRecordBatch::try_new(
+                        fetching_schema,
+                        primary_key_indexes,
+                        fetching_column_indexes,
+                        batch.clone(),
+                    )
+                    .box_err()
+                    .with_context(|| Internal {
+                        msg: format!("record_fetching_ctx:{record_fetching_ctx:?}",),
                     })
                 })
             })
@@ -105,7 +118,7 @@ impl ColumnarIterImpl {
 }
 
 impl Iterator for ColumnarIterImpl {
-    type Item = Result<RecordBatchWithKey>;
+    type Item = Result<FetchingRecordBatch>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.selected_batch_iter.next()
