@@ -140,7 +140,6 @@ fn bench_scan_memtable(c: &mut Criterion) {
 
     for i in 0..bench.num_benches() {
         bench.init_for_bench(i);
-
         group.bench_with_input(
             BenchmarkId::new("scan_memtable", i),
             &bench,

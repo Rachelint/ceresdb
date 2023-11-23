@@ -24,8 +24,10 @@ use common_types::{
     request_id::RequestId,
     schema::RecordSchemaWithKey,
 };
+use datafusion::physical_plan::projection;
 use generic_error::GenericError;
-use logger::debug;
+use itertools::Itertools;
+use logger::{debug, info};
 use macros::define_result;
 use snafu::{ResultExt, Snafu};
 use table_engine::{predicate::PredicateRef, table::TableId};
@@ -133,6 +135,18 @@ impl<'a> Builder<'a> {
             .sst_read_options_builder
             .build(record_fetching_ctx_builder.clone());
 
+
+        let table_cols = table_schema
+            .columns()
+            .iter()
+            .format_with(",", |col, f| f(&format_args!("{}", col.name)));
+        let fetching_cols = fetching_schema
+            .columns()
+            .iter()
+            .format_with(",", |col, f| f(&format_args!("{}", col.name)));
+        let projection = self.config.projected_schema.projection();
+
+        info!("[quickdebug] table_id:{:?}, table_cols:{table_cols}, fetching_cols:{fetching_cols}, projection:{projection:?}", self.config.table_id);        
         let memtable_stream_ctx = MemtableStreamContext {
             record_fetching_ctx_builder,
             fetching_schema: fetching_schema.clone(),

@@ -149,6 +149,7 @@ pub struct TableConfig {
     pub manifest_snapshot_every_n_updates: NonZeroUsize,
     pub metrics_opt: MetricsOptions,
     pub enable_primary_key_sampling: bool,
+    pub enable_layered_memtable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -325,11 +326,25 @@ impl TableData {
             manifest_snapshot_every_n_updates,
             metrics_opt,
             enable_primary_key_sampling,
+            enable_layered_memtable,
         } = config;
 
         let memtable_factory: MemTableFactoryRef = match opts.memtable_type {
             MemtableType::SkipList => Arc::new(SkiplistMemTableFactory),
             MemtableType::Columnar => Arc::new(ColumnarMemTableFactory),
+        };
+        let memtable_factory = if enable_layered_memtable {
+            let mutable_switch_threshold = compute_mutable_switch_threshold(
+                opts.write_buffer_size,
+                preflush_write_buffer_size_ratio,
+                0.125,
+            );
+            Arc::new(LayeredMemtableFactory::new(
+                memtable_factory,
+                mutable_switch_threshold as usize,
+            )) as _
+        } else {
+            memtable_factory as _
         };
 
         // Wrap it by `LayeredMemtable`.
@@ -400,19 +415,25 @@ impl TableData {
             manifest_snapshot_every_n_updates,
             metrics_opt,
             enable_primary_key_sampling,
+            enable_layered_memtable,
         } = config;
-        let memtable_factory = Arc::new(SkiplistMemTableFactory);
 
+        
+        let memtable_factory = Arc::new(SkiplistMemTableFactory);
         // Wrap it by `LayeredMemtable`.
-        let mutable_switch_threshold = compute_mutable_switch_threshold(
-            add_meta.opts.write_buffer_size,
-            preflush_write_buffer_size_ratio,
-            0.125,
-        );
-        let memtable_factory = Arc::new(LayeredMemtableFactory::new(
-            memtable_factory,
-            mutable_switch_threshold as usize,
-        ));
+        let memtable_factory = if enable_layered_memtable {
+            let mutable_switch_threshold = compute_mutable_switch_threshold(
+                add_meta.opts.write_buffer_size,
+                preflush_write_buffer_size_ratio,
+                0.125,
+            );
+            Arc::new(LayeredMemtableFactory::new(
+                memtable_factory,
+                mutable_switch_threshold as usize,
+            )) as _
+        } else {
+            memtable_factory as _
+        };
 
         let purge_queue = purger.create_purge_queue(add_meta.space_id, add_meta.table_id);
         let current_version =
@@ -990,6 +1011,7 @@ pub mod tests {
                     manifest_snapshot_every_n_updates: self.manifest_snapshot_every_n_updates,
                     metrics_opt: MetricsOptions::default(),
                     enable_primary_key_sampling: false,
+                    enable_layered_memtable: false,
                 },
                 &purger,
                 mem_size_options,

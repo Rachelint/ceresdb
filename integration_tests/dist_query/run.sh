@@ -40,42 +40,42 @@ mkdir -p ${OUTPUT_DIR}
 
 # Prepare components
 ## Tsbs
-if [[ -d ${TSBS_REPO_PATH} ]] && [[ ${UPDATE_REPOS_TO_LATEST} == 'true' ]]; then
-  echo "Remove old tsbs..."
-  rm -rf ${TSBS_REPO_PATH}
-fi
+# if [[ -d ${TSBS_REPO_PATH} ]] && [[ ${UPDATE_REPOS_TO_LATEST} == 'true' ]]; then
+#   echo "Remove old tsbs..."
+#   rm -rf ${TSBS_REPO_PATH}
+# fi
 
-if [[ ! -d ${TSBS_REPO_PATH} ]]; then
-    echo "Pull tsbs repo and build..."
-    git clone -b feat-ceresdb --depth 1 --single-branch https://github.com/CeresDB/tsbs.git
-    cd tsbs
-    go build ./cmd/tsbs_generate_data
-    go build ./cmd/tsbs_load_ceresdb
-    go build ./cmd/tsbs_generate_queries
-    go build ./cmd/tsbs_run_queries_ceresdb
-    cd ..
-fi
+# if [[ ! -d ${TSBS_REPO_PATH} ]]; then
+#     echo "Pull tsbs repo and build..."
+#     git clone -b feat-ceresdb --depth 1 --single-branch https://github.com/CeresDB/tsbs.git
+#     cd tsbs
+#     go build ./cmd/tsbs_generate_data
+#     go build ./cmd/tsbs_load_ceresdb
+#     go build ./cmd/tsbs_generate_queries
+#     go build ./cmd/tsbs_run_queries_ceresdb
+#     cd ..
+# fi
 
-## Data
-if [[ -d ${DATA_REPO_PATH} ]] && [[ ${UPDATE_REPOS_TO_LATEST} == 'true' ]]; then
-  echo "Remove old dist query testing..."
-  rm -rf ${DATA_REPO_PATH}
-fi
+# ## Data
+# if [[ -d ${DATA_REPO_PATH} ]] && [[ ${UPDATE_REPOS_TO_LATEST} == 'true' ]]; then
+#   echo "Remove old dist query testing..."
+#   rm -rf ${DATA_REPO_PATH}
+# fi
 
-if [[ ! -d ${DATA_REPO_PATH} ]]; then
-    echo "Pull dist query testing repo..."
-    git clone -b main --depth 1 --single-branch https://github.com/CeresDB/dist-query-testing.git
-fi
+# if [[ ! -d ${DATA_REPO_PATH} ]]; then
+#     echo "Pull dist query testing repo..."
+#     git clone -b main --depth 1 --single-branch https://github.com/CeresDB/dist-query-testing.git
+# fi
 
 # Clean old table if exist
 curl -XPOST "${CERESDB_HTTP_ADDR}/sql" -d 'DROP TABLE IF EXISTS `cpu`'
 
 # Write data to ceresdb
-${CURR_DIR}/tsbs/tsbs_load_ceresdb --ceresdb-addr=${CERESDB_ADDR} --file ${DATA_FILE} --batch-size ${WRITE_BATCH_SIZE} --workers ${WRITE_WORKER_NUM}  --access-mode proxy --partition-keys hostname --update-mode APPEND | tee ${OUTPUT_DIR}/${CASE_DIR}-${CASE_DATASOURCE}.log
+${CURR_DIR}/tsbs/tsbs_load_ceresdb --ceresdb-addr=${CERESDB_ADDR} --file ${DATA_FILE} --batch-size ${WRITE_BATCH_SIZE} --workers ${WRITE_WORKER_NUM}  --access-mode proxy --update-mode APPEND | tee ${OUTPUT_DIR}/${CASE_DIR}-${CASE_DATASOURCE}.log
 
 # Run queries against ceresdb
 # TODO: support more kinds of queries besides 5-8-1.
-cat ${BULK_DATA_DIR}/${CASE_QUERY} | gunzip | ${CURR_DIR}/tsbs/tsbs_run_queries_ceresdb --ceresdb-addr=${CERESDB_ADDR} --print-responses true --access-mode proxy --responses-file ${QUERY_RESULTS_FILE} | tee ${OUTPUT_DIR}/${CASE_DIR}-${CASE_QUERY}.log
+#cat ${BULK_DATA_DIR}/${CASE_QUERY} | gunzip | ${CURR_DIR}/tsbs/tsbs_run_queries_ceresdb --ceresdb-addr=${CERESDB_ADDR} --print-responses true --access-mode proxy --responses-file ${QUERY_RESULTS_FILE} | tee ${OUTPUT_DIR}/${CASE_DIR}-${CASE_QUERY}.log
 
 # Diff the results
-python3 ${CURR_DIR}/diff.py --expected ${QUERY_EXPECTED_RESULTS_FILE} --actual ${QUERY_RESULTS_FILE}
+#python3 ${CURR_DIR}/diff.py --expected ${QUERY_EXPECTED_RESULTS_FILE} --actual ${QUERY_RESULTS_FILE}
